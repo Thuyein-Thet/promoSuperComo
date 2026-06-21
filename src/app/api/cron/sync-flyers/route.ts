@@ -18,10 +18,10 @@ function buildFirecrawlClient(): FirecrawlClient {
 
 function buildBlobClient(): BlobClient {
   return {
-    async upload(tokubaiImageId: string, sourceUrl: string) {
+    async upload(tokubaiStoreId: string, tokubaiImageId: string, sourceUrl: string) {
       const response = await fetch(sourceUrl);
       const bytes = await response.arrayBuffer();
-      const blob = await put(`flyers/${tokubaiImageId}.jpg`, Buffer.from(bytes), {
+      const blob = await put(`flyers/${tokubaiStoreId}/${tokubaiImageId}.jpg`, Buffer.from(bytes), {
         access: "public",
         addRandomSuffix: false,
       });
@@ -39,12 +39,16 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
-  await ensureSchema();
-  const result = await syncFlyers({
-    firecrawl: buildFirecrawlClient(),
-    blob: buildBlobClient(),
-    concurrency: 8,
-  });
+  try {
+    await ensureSchema();
+    const result = await syncFlyers({
+      firecrawl: buildFirecrawlClient(),
+      blob: buildBlobClient(),
+      concurrency: 8,
+    });
 
-  return NextResponse.json(result);
+    return NextResponse.json(result);
+  } catch (err) {
+    return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
+  }
 }

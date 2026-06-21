@@ -6,7 +6,7 @@ export interface FirecrawlClient {
 }
 
 export interface BlobClient {
-  upload(tokubaiImageId: string, sourceUrl: string): Promise<string>;
+  upload(tokubaiStoreId: string, tokubaiImageId: string, sourceUrl: string): Promise<string>;
   delete(blobUrl: string): Promise<void>;
 }
 
@@ -50,7 +50,7 @@ async function processStore(
   for (const images of imagesByUrl.values()) {
     for (const image of images) {
       if (!newImageIds.includes(image.tokubaiImageId)) continue;
-      const blobUrl = await deps.blob.upload(image.tokubaiImageId, image.originalUrl);
+      const blobUrl = await deps.blob.upload(tokubaiStoreId, image.tokubaiImageId, image.originalUrl);
       await upsertFlyer({ storeId: store.id, tokubaiImageId: image.tokubaiImageId, blobUrl });
     }
   }

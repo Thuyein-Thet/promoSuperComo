@@ -32,7 +32,7 @@ describe("syncFlyers", () => {
       }),
     };
     const blob = {
-      upload: vi.fn(async (id: string) => `https://blob.example/${id}.jpg`),
+      upload: vi.fn(async (_storeId: string, id: string) => `https://blob.example/${id}.jpg`),
       delete: vi.fn(async () => {}),
     };
 
@@ -40,7 +40,7 @@ describe("syncFlyers", () => {
 
     expect(result.storesProcessed).toBe(1);
     expect(result.storesFailed).toEqual([]);
-    expect(blob.upload).toHaveBeenCalledWith("9416450", expect.stringContaining("9416450.jpg"));
+    expect(blob.upload).toHaveBeenCalledWith("259321", "9416450", expect.stringContaining("9416450.jpg"));
 
     const stores = await getAllStoresWithFlyers();
     expect(stores).toHaveLength(1);
@@ -62,7 +62,7 @@ describe("syncFlyers", () => {
         throw new Error(`unexpected url ${url}`);
       }),
     };
-    const blob = { upload: vi.fn(async (id: string) => `https://blob.example/${id}.jpg`), delete: vi.fn(async () => {}) };
+    const blob = { upload: vi.fn(async (_storeId: string, id: string) => `https://blob.example/${id}.jpg`), delete: vi.fn(async () => {}) };
 
     const result = await syncFlyers({ firecrawl, blob, concurrency: 2 });
 
@@ -83,7 +83,7 @@ describe("syncFlyers", () => {
         throw new Error(`unexpected url ${url}`);
       }),
     };
-    const blob = { upload: vi.fn(async (id: string) => `https://blob.example/${id}.jpg`), delete: vi.fn(async () => {}) };
+    const blob = { upload: vi.fn(async (_storeId: string, id: string) => `https://blob.example/${id}.jpg`), delete: vi.fn(async () => {}) };
 
     await syncFlyers({ firecrawl, blob, concurrency: 2 });
 
