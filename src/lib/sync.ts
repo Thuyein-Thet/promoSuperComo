@@ -33,10 +33,13 @@ async function processStore(
     lng: detail.lng,
   });
 
+  const imagesByUrl = new Map<string, ReturnType<typeof parseFlyerImages>>();
   const currentImageIds = new Set<string>();
   for (const leafletUrl of detail.leafletUrls) {
     const leafletPage = await deps.firecrawl.scrape(leafletUrl);
-    for (const image of parseFlyerImages(leafletPage.markdown)) {
+    const images = parseFlyerImages(leafletPage.markdown);
+    imagesByUrl.set(leafletUrl, images);
+    for (const image of images) {
       currentImageIds.add(image.tokubaiImageId);
     }
   }
@@ -44,9 +47,8 @@ async function processStore(
   const existingImageIds = new Set(await getFlyerImageIdsForStore(store.id));
   const newImageIds = [...currentImageIds].filter((id) => !existingImageIds.has(id));
 
-  for (const leafletUrl of detail.leafletUrls) {
-    const leafletPage = await deps.firecrawl.scrape(leafletUrl);
-    for (const image of parseFlyerImages(leafletPage.markdown)) {
+  for (const images of imagesByUrl.values()) {
+    for (const image of images) {
       if (!newImageIds.includes(image.tokubaiImageId)) continue;
       const blobUrl = await deps.blob.upload(image.tokubaiImageId, image.originalUrl);
       await upsertFlyer({ storeId: store.id, tokubaiImageId: image.tokubaiImageId, blobUrl });
