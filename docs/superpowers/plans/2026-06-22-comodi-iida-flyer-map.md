@@ -1432,6 +1432,10 @@ vi.mock("react-leaflet", () => ({
 
 vi.mock("leaflet.markercluster", () => ({}));
 
+vi.mock("react-leaflet-cluster", () => ({
+  default: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+
 import { FlyerMap } from "./FlyerMap";
 
 const STORES = [
@@ -1499,7 +1503,7 @@ Expected: FAIL — `Cannot find module './FlyerMap'`.
 ```typescript
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import { StoreSearch, type SearchableStore } from "./StoreSearch";
@@ -1525,7 +1529,7 @@ export function FlyerMap() {
       .then((data: Store[]) => setStores(data));
   }, []);
 
-  const geocodedStores = stores.filter((s) => s.lat !== null && s.lng !== null);
+  const geocodedStores = useMemo(() => stores.filter((s) => s.lat !== null && s.lng !== null), [stores]);
   const visibleStores = geocodedStores.filter((s) => matchedIds.has(s.id));
   const activeStore = stores.find((s) => s.id === activeStoreId) ?? null;
   const isMobile = typeof window !== "undefined" && window.innerWidth < MOBILE_BREAKPOINT_PX;
@@ -1566,6 +1570,8 @@ export function FlyerMap() {
 }
 ```
 
+(Amended post Task-8 implementation: `geocodedStores` must be wrapped in `useMemo`. Without it, `.filter()` returns a new array reference on every render; `StoreSearch`'s `useEffect` (Task 7) depends on that `stores` reference and calls back into `setMatchedIds`, which triggers a re-render, which recomputes a new array reference, looping indefinitely. Confirmed as a genuine infinite render loop, not a theoretical concern.)
+
 - [ ] **Step 4: Run tests to verify they pass**
 
 ```bash
@@ -1579,7 +1585,13 @@ Expected: PASS (4 tests).
 Modify `src/app/page.tsx`:
 
 ```typescript
-import { FlyerMap } from "@/components/FlyerMap";
+"use client";
+
+import dynamic from "next/dynamic";
+
+const FlyerMap = dynamic(() => import("@/components/FlyerMap").then((mod) => mod.FlyerMap), {
+  ssr: false,
+});
 
 export default function Home() {
   return (
@@ -1590,6 +1602,8 @@ export default function Home() {
   );
 }
 ```
+
+(Amended post Task-8 implementation: a plain static `import { FlyerMap } from "@/components/FlyerMap"` crashes Next.js's server-side prerendering with `ReferenceError: window is not defined`, because Leaflet touches `window` at module load time. `page.tsx` must be a client component using `next/dynamic` with `ssr: false` to defer loading `FlyerMap` until the browser. Confirmed by reverting to the static import and reproducing the build failure.)
 
 - [ ] **Step 6: Add marker clustering**
 
@@ -1625,7 +1639,9 @@ Then change the JSX so markers render inside `<MarkerClusterGroup>`:
         </MarkerClusterGroup>
 ```
 
-Re-run `npx vitest run src/components/FlyerMap.test.tsx` — the mocked `react-leaflet` module doesn't export `MarkerClusterGroup` from that path (it's a separate package), so the existing mocks are unaffected; tests should still pass.
+Re-run `npx vitest run src/components/FlyerMap.test.tsx`.
+
+(Amended post Task-8 implementation: the brief originally claimed the existing mocks would be unaffected, but `react-leaflet-cluster`'s `MarkerClusterGroup` is built on `@react-leaflet/core`'s `createPathComponent`, which calls real Leaflet context hooks (`useLeafletContext`) independent of the `react-leaflet` mock above — without its own mock, tests fail with `useLeafletContext() can only be used in a descendant of <MapContainer>`. The `vi.mock("react-leaflet-cluster", ...)` added to Step 1's test setup, shown above, is required for these tests to pass.)
 
 - [ ] **Step 7: Manual verification in a real browser**
 
@@ -1871,3 +1887,4 @@ git commit -m "Document local development and deployment setup"
 - **Amendment (post Task-4 implementation):** added `fileParallelism: false` to `vitest.config.ts`. Multiple test files (`db.test.ts`, `sync.test.ts`, and future DB-touching suites) `TRUNCATE` and write to the same shared Postgres database; Vitest's default parallel-file execution raced those writes and corrupted assertions across files (confirmed: 4 spurious failures in default mode, 0 with sequential file execution). Running test files sequentially avoids this without per-file schema isolation. No test code changed.
 - **Amendment (post Task-4 implementation):** `processStore` in `src/lib/sync.ts` originally fetched each leaflet URL via Firecrawl twice (once to compute `currentImageIds`, once again to read `image.originalUrl` for upload) — functionally correct but wasteful against a metered API. Fixed by caching each leaflet URL's parsed `FlyerImage[]` in a `Map` during the first pass and reusing it for the upload pass. Pure internal refactor; `syncFlyers`'s observable behavior, `SyncResult` shape, and DB/Blob call semantics are unchanged.
 - **Amendment (post Task-5 review):** `BlobClient.upload` (Task 4) gained a `tokubaiStoreId` first parameter, and the real adapter in Task 5's cron route keys Blob storage as `flyers/${tokubaiStoreId}/${tokubaiImageId}.jpg` instead of `flyers/${tokubaiImageId}.jpg`. `tokubaiImageId` alone is a Tokubai-CDN-wide image ID, not guaranteed unique per store — without store-scoping, two different stores could collide on the same image ID and silently overwrite each other's flyer Blob. Also added a top-level try/catch in the cron route's `GET` handler so a failure in `ensureSchema()` or the initial chain-page scrape (before `syncFlyers`'s per-store error handling applies) returns a structured `{ error }` 500 response instead of an opaque crash. All affected code blocks in Tasks 4, 5, and 9 were updated for consistency.
+- **Amendment (post Task-8 implementation):** three real bugs found and fixed in `FlyerMap.tsx`/`page.tsx`/the test file, all confirmed by independent reproduction (reverting each fix and observing the original failure), not just trusted: (1) `geocodedStores` needed `useMemo` to avoid an infinite render loop caused by `StoreSearch`'s `useEffect` depending on an unstable array reference; (2) the test file needed its own `vi.mock("react-leaflet-cluster", ...)` since that package's `MarkerClusterGroup` uses real `@react-leaflet/core` context hooks independent of the `react-leaflet` mock; (3) `page.tsx` needed to become a client component using `next/dynamic({ ssr: false })` instead of a static import, since Leaflet touches `window` at module load time and crashes Next.js's server-side prerendering otherwise. All three code blocks above reflect the corrected versions.
