@@ -6,7 +6,9 @@
 
 **Architecture:** A single Next.js (App Router) project. `/api/cron/sync-flyers` is a serverless route triggered daily by Vercel Cron; it uses the Firecrawl SDK to discover stores and scrape flyers, diffs against Postgres, and syncs Blob storage. The `/` page renders a client-side Leaflet map (fed by a `/api/stores` route) with clustering, search, and a responsive popup/panel for viewing flyers.
 
-**Tech Stack:** Next.js 16 (App Router, TypeScript), `firecrawl` SDK (^4.28.2), `@vercel/postgres` (^0.10.0), `@vercel/blob` (^2.4.1), `leaflet` (^1.9.4) + `react-leaflet` (^5.0.0) + `leaflet.markercluster` (^1.5.3), Vitest (^4.1.9) for unit tests.
+**Tech Stack:** Next.js 16 (App Router, TypeScript), `firecrawl` SDK (^4.28.2), `pg` (^8.22.0) against Vercel Postgres/Neon's standard connection string, `@vercel/blob` (^2.4.1), `leaflet` (^1.9.4) + `react-leaflet` (^5.0.0) + `leaflet.markercluster` (^1.5.3), Vitest (^4.1.9) for unit tests.
+
+**Note on `pg` vs `@vercel/postgres`:** the plan originally specified `@vercel/postgres`, but that package's `sql` client only speaks HTTP/WebSocket to Neon's proxy and cannot reach a plain local Postgres (Docker or native install) without also running Neon's separate `wsproxy` — discovered during Task 3 implementation. `pg` talks standard Postgres wire protocol and works identically against local Postgres and against Vercel Postgres/Neon in production (Neon issues a normal libpq-compatible connection string alongside its HTTP one). `POSTGRES_URL` remains the env var name throughout.
 
 ## Global Constraints
 
@@ -58,7 +60,7 @@ vercel.json                  # cron schedule config
 
 **Responsibilities:**
 - `lib/tokubai.ts` — pure functions that parse Firecrawl's markdown output into typed data (store list, store detail, flyer image URLs). No network calls, no DB. Fully unit-testable with fixture strings.
-- `lib/db.ts` — all SQL. Exposes typed functions (`upsertStore`, `getStoreFlyerImageIds`, `upsertFlyer`, `deleteFlyer`, `getAllStoresWithFlyers`). Nothing else touches `@vercel/postgres` directly.
+- `lib/db.ts` — all SQL. Exposes typed functions (`upsertStore`, `getStoreFlyerImageIds`, `upsertFlyer`, `deleteFlyer`, `getAllStoresWithFlyers`). Nothing else touches `pg` directly.
 - `lib/sync.ts` — the cron orchestration: calls Firecrawl (via injected client), calls `lib/tokubai.ts` parsers, calls `lib/db.ts`, calls Blob upload/delete. Batches concurrency. Catches and logs per-store errors.
 - `app/api/cron/sync-flyers/route.ts` — thin HTTP wrapper around `lib/sync.ts`.
 - `app/api/stores/route.ts` — thin HTTP wrapper around `lib/db.ts`'s `getAllStoresWithFlyers`.
@@ -88,8 +90,8 @@ When prompted about the existing directory/files, choose to proceed in the curre
 - [ ] **Step 2: Install runtime dependencies**
 
 ```bash
-npm install firecrawl@^4.28.2 @vercel/postgres@^0.10.0 @vercel/blob@^2.4.1 leaflet@^1.9.4 react-leaflet@^5.0.0 leaflet.markercluster@^1.5.3
-npm install -D vitest@^4.1.9 @testing-library/react@^16 @testing-library/jest-dom@^6 jsdom@^25 @types/leaflet@^1.9.12 @types/leaflet.markercluster@^1.5.4
+npm install firecrawl@^4.28.2 pg@^8.22.0 @vercel/blob@^2.4.1 leaflet@^1.9.4 react-leaflet@^5.0.0 leaflet.markercluster@^1.5.3
+npm install -D vitest@^4.1.9 @testing-library/react@^16 @testing-library/jest-dom@^6 jsdom@^25 @types/pg@^8.20.0 @types/leaflet@^1.9.12 @types/leaflet.markercluster@^1.5.4
 ```
 
 - [ ] **Step 3: Add Vitest config**
@@ -413,7 +415,7 @@ git commit -m "Add Tokubai markdown parsing helpers"
 - Test: `src/lib/db.test.ts`
 
 **Interfaces:**
-- Consumes: `@vercel/postgres` `sql` client (test uses an injected mock pool, not a real DB).
+- Consumes: `pg`'s `Pool` client, configured from `POSTGRES_URL` (tests run against a real local Postgres — see Step 2 — not a mock; `pg` speaks plain Postgres wire protocol so this works identically against local Postgres and against Vercel Postgres/Neon in production).
 - Produces:
   ```typescript
   interface StoreRow {
@@ -442,17 +444,16 @@ git commit -m "Add Tokubai markdown parsing helpers"
   async function getAllStoresWithFlyers(): Promise<StoreWithFlyers[]>;
   ```
 
-- [ ] **Step 1: Write failing tests against a real local Postgres via `@vercel/postgres`'s connection string**
+- [ ] **Step 1: Write failing tests against a real local Postgres**
 
-This task needs an actual Postgres to test against (Vercel's `sql` template-tag client talks to a real server; mocking it would test nothing meaningful). Use a local Postgres for tests.
+This task needs an actual Postgres to test against (`pg`'s `Pool` talks to a real server; mocking it would test nothing meaningful). Use a local Postgres for tests.
 
 Create `src/lib/db.test.ts`:
 
 ```typescript
 import { describe, it, expect, beforeEach, afterAll } from "vitest";
-import { sql } from "@vercel/postgres";
+import { pool, ensureSchema } from "./db";
 import {
-  ensureSchema,
   upsertStore,
   getFlyerImageIdsForStore,
   upsertFlyer,
@@ -462,11 +463,12 @@ import {
 
 beforeEach(async () => {
   await ensureSchema();
-  await sql`TRUNCATE flyers, stores RESTART IDENTITY CASCADE`;
+  await pool.query("TRUNCATE flyers, stores RESTART IDENTITY CASCADE");
 });
 
 afterAll(async () => {
-  await sql`TRUNCATE flyers, stores RESTART IDENTITY CASCADE`;
+  await pool.query("TRUNCATE flyers, stores RESTART IDENTITY CASCADE");
+  await pool.end();
 });
 
 describe("upsertStore", () => {
@@ -532,13 +534,17 @@ describe("flyer sync", () => {
 });
 ```
 
-- [ ] **Step 2: Start a local Postgres and point `POSTGRES_URL` at it**
+- [ ] **Step 2: Point `POSTGRES_URL` at a local Postgres**
+
+Use any local Postgres 16 server (Docker, a native install, or Homebrew). For example, with Docker:
 
 ```bash
 docker run -d --name superpromo-test-pg -e POSTGRES_PASSWORD=postgres -p 5433:5432 postgres:16
 sleep 2
 export POSTGRES_URL="postgres://postgres:postgres@localhost:5433/postgres"
 ```
+
+If Docker is unavailable, point `POSTGRES_URL` at whatever local Postgres server and credentials are already available in the environment instead — the schema/test code does not depend on how the server was started, only that it is a real, reachable Postgres 16+ instance.
 
 - [ ] **Step 3: Run tests to verify they fail**
 
@@ -551,7 +557,9 @@ Expected: FAIL — `Cannot find module './db'`.
 - [ ] **Step 4: Implement `src/lib/db.ts`**
 
 ```typescript
-import { sql } from "@vercel/postgres";
+import { Pool } from "pg";
+
+export const pool = new Pool({ connectionString: process.env.POSTGRES_URL });
 
 export interface StoreRow {
   id: number;
@@ -574,7 +582,7 @@ export interface StoreWithFlyers extends StoreRow {
 }
 
 export async function ensureSchema(): Promise<void> {
-  await sql`
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS stores (
       id serial PRIMARY KEY,
       tokubai_store_id text UNIQUE NOT NULL,
@@ -584,8 +592,8 @@ export async function ensureSchema(): Promise<void> {
       lng double precision,
       last_scraped_at timestamptz
     )
-  `;
-  await sql`
+  `);
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS flyers (
       id serial PRIMARY KEY,
       store_id integer NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
@@ -594,7 +602,7 @@ export async function ensureSchema(): Promise<void> {
       updated_at timestamptz DEFAULT now(),
       UNIQUE (store_id, tokubai_image_id)
     )
-  `;
+  `);
 }
 
 function toStoreRow(row: Record<string, unknown>): StoreRow {
@@ -615,40 +623,41 @@ export async function upsertStore(input: {
   lat: number | null;
   lng: number | null;
 }): Promise<StoreRow> {
-  const { rows } = await sql`
-    INSERT INTO stores (tokubai_store_id, name, address, lat, lng, last_scraped_at)
-    VALUES (${input.tokubaiStoreId}, ${input.name}, ${input.address}, ${input.lat}, ${input.lng}, now())
-    ON CONFLICT (tokubai_store_id)
-    DO UPDATE SET name = EXCLUDED.name, address = EXCLUDED.address,
-                  lat = EXCLUDED.lat, lng = EXCLUDED.lng, last_scraped_at = now()
-    RETURNING id, tokubai_store_id, name, address, lat, lng
-  `;
+  const { rows } = await pool.query(
+    `INSERT INTO stores (tokubai_store_id, name, address, lat, lng, last_scraped_at)
+     VALUES ($1, $2, $3, $4, $5, now())
+     ON CONFLICT (tokubai_store_id)
+     DO UPDATE SET name = EXCLUDED.name, address = EXCLUDED.address,
+                   lat = EXCLUDED.lat, lng = EXCLUDED.lng, last_scraped_at = now()
+     RETURNING id, tokubai_store_id, name, address, lat, lng`,
+    [input.tokubaiStoreId, input.name, input.address, input.lat, input.lng],
+  );
   return toStoreRow(rows[0]);
 }
 
 export async function getFlyerImageIdsForStore(storeId: number): Promise<string[]> {
-  const { rows } = await sql`
-    SELECT tokubai_image_id FROM flyers WHERE store_id = ${storeId}
-  `;
+  const { rows } = await pool.query("SELECT tokubai_image_id FROM flyers WHERE store_id = $1", [storeId]);
   return rows.map((r) => r.tokubai_image_id as string);
 }
 
 export async function upsertFlyer(input: { storeId: number; tokubaiImageId: string; blobUrl: string }): Promise<void> {
-  await sql`
-    INSERT INTO flyers (store_id, tokubai_image_id, blob_url, updated_at)
-    VALUES (${input.storeId}, ${input.tokubaiImageId}, ${input.blobUrl}, now())
-    ON CONFLICT (store_id, tokubai_image_id)
-    DO UPDATE SET blob_url = EXCLUDED.blob_url, updated_at = now()
-  `;
+  await pool.query(
+    `INSERT INTO flyers (store_id, tokubai_image_id, blob_url, updated_at)
+     VALUES ($1, $2, $3, now())
+     ON CONFLICT (store_id, tokubai_image_id)
+     DO UPDATE SET blob_url = EXCLUDED.blob_url, updated_at = now()`,
+    [input.storeId, input.tokubaiImageId, input.blobUrl],
+  );
 }
 
 export async function deleteFlyersNotIn(storeId: number, keepImageIds: string[]): Promise<FlyerRow[]> {
-  const { rows } = await sql`
-    DELETE FROM flyers
-    WHERE store_id = ${storeId}
-      AND tokubai_image_id <> ALL(${keepImageIds.length ? keepImageIds : [""]})
-    RETURNING id, store_id, tokubai_image_id, blob_url
-  `;
+  const { rows } = await pool.query(
+    `DELETE FROM flyers
+     WHERE store_id = $1
+       AND tokubai_image_id <> ALL($2)
+     RETURNING id, store_id, tokubai_image_id, blob_url`,
+    [storeId, keepImageIds.length ? keepImageIds : [""]],
+  );
   return rows.map((r) => ({
     id: r.id as number,
     storeId: r.store_id as number,
@@ -658,8 +667,8 @@ export async function deleteFlyersNotIn(storeId: number, keepImageIds: string[])
 }
 
 export async function getAllStoresWithFlyers(): Promise<StoreWithFlyers[]> {
-  const { rows: storeRows } = await sql`SELECT * FROM stores ORDER BY id`;
-  const { rows: flyerRows } = await sql`SELECT * FROM flyers ORDER BY id`;
+  const { rows: storeRows } = await pool.query("SELECT * FROM stores ORDER BY id");
+  const { rows: flyerRows } = await pool.query("SELECT * FROM flyers ORDER BY id");
 
   return storeRows.map((s) => ({
     ...toStoreRow(s),
@@ -678,11 +687,13 @@ npx vitest run src/lib/db.test.ts
 
 Expected: PASS (5 tests).
 
-- [ ] **Step 6: Stop the test Postgres container**
+- [ ] **Step 6: Stop the test Postgres container (if one was started for this task)**
 
 ```bash
 docker stop superpromo-test-pg && docker rm superpromo-test-pg
 ```
+
+Skip this step if testing against a pre-existing local Postgres install rather than a throwaway Docker container.
 
 - [ ] **Step 7: Commit**
 
@@ -731,8 +742,7 @@ Create `src/lib/sync.test.ts`:
 
 ```typescript
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { sql } from "@vercel/postgres";
-import { ensureSchema, getAllStoresWithFlyers } from "./db";
+import { pool, ensureSchema, getAllStoresWithFlyers } from "./db";
 import { syncFlyers } from "./sync";
 
 const CHAIN_URL = "https://tokubai.co.jp/%E3%82%B3%E3%83%A2%E3%83%87%E3%82%A3%E3%82%A4%E3%82%A4%E3%83%80/leaflet";
@@ -747,11 +757,11 @@ const LEAFLET_PAGE_MD = `[img](https://image.tokubai.co.jp/images/bargain_office
 
 beforeEach(async () => {
   await ensureSchema();
-  await sql`TRUNCATE flyers, stores RESTART IDENTITY CASCADE`;
+  await pool.query("TRUNCATE flyers, stores RESTART IDENTITY CASCADE");
 });
 
 afterEach(async () => {
-  await sql`TRUNCATE flyers, stores RESTART IDENTITY CASCADE`;
+  await pool.query("TRUNCATE flyers, stores RESTART IDENTITY CASCADE");
 });
 
 describe("syncFlyers", () => {
@@ -836,13 +846,9 @@ describe("syncFlyers", () => {
 });
 ```
 
-- [ ] **Step 2: Start local Postgres for this test run**
+- [ ] **Step 2: Point `POSTGRES_URL` at a local Postgres for this test run**
 
-```bash
-docker run -d --name superpromo-test-pg -e POSTGRES_PASSWORD=postgres -p 5433:5432 postgres:16
-sleep 2
-export POSTGRES_URL="postgres://postgres:postgres@localhost:5433/postgres"
-```
+Use the same local Postgres setup as Task 3 (Docker or a native install — see Task 3 Step 2 for both options).
 
 - [ ] **Step 3: Run tests to verify they fail**
 
@@ -961,11 +967,13 @@ npx vitest run src/lib/sync.test.ts
 
 Expected: PASS (3 tests).
 
-- [ ] **Step 6: Stop the test Postgres container**
+- [ ] **Step 6: Stop the test Postgres container (if one was started for this task)**
 
 ```bash
 docker stop superpromo-test-pg && docker rm superpromo-test-pg
 ```
+
+Skip this step if testing against a pre-existing local Postgres install rather than a throwaway Docker container.
 
 - [ ] **Step 7: Commit**
 
@@ -1612,10 +1620,9 @@ Re-run `npx vitest run src/components/FlyerMap.test.tsx` — the mocked `react-l
 
 - [ ] **Step 7: Manual verification in a real browser**
 
+Point `POSTGRES_URL` at a local Postgres (same setup as Task 3 Step 2), then:
+
 ```bash
-docker run -d --name superpromo-test-pg -e POSTGRES_PASSWORD=postgres -p 5433:5432 postgres:16
-sleep 2
-export POSTGRES_URL="postgres://postgres:postgres@localhost:5433/postgres"
 npm run dev
 ```
 
@@ -1624,11 +1631,7 @@ Open `http://localhost:3000`. Since there's no seeded data yet, the map will ren
 2. The map tiles render (OpenStreetMap).
 3. The search input is visible.
 
-Stop the dev server and the test DB:
-
-```bash
-docker stop superpromo-test-pg && docker rm superpromo-test-pg
-```
+Stop the dev server (and the test DB, if a throwaway container was used for it).
 
 (Full end-to-end verification with real store data happens in Task 9, after the cron sync can be run manually against this DB.)
 
@@ -1649,10 +1652,7 @@ git commit -m "Add FlyerMap with clustering, search filtering, and responsive fl
 
 - [ ] **Step 1: Start a local Postgres**
 
-```bash
-docker run -d --name superpromo-dev-pg -e POSTGRES_PASSWORD=postgres -p 5433:5432 postgres:16
-sleep 2
-```
+Use the same local Postgres setup as Task 3 Step 2 (Docker or a native install).
 
 - [ ] **Step 2: Create `.env.local` with real credentials**
 
@@ -1660,10 +1660,10 @@ sleep 2
 cp .env.example .env.local
 ```
 
-Edit `.env.local`:
+Edit `.env.local`, setting `POSTGRES_URL` to whatever connection string Step 1 produced:
 ```
 FIRECRAWL_API_KEY=<your real key from `firecrawl config`>
-POSTGRES_URL=postgres://postgres:postgres@localhost:5433/postgres
+POSTGRES_URL=<local Postgres connection string from Step 1>
 BLOB_READ_WRITE_TOKEN=<leave blank for this local run — see step 4>
 CRON_SECRET=local-dev-secret
 ```
@@ -1729,9 +1729,10 @@ Open `http://localhost:3000`. Confirm:
 ```bash
 git checkout src/app/api/cron/sync-flyers/route.ts
 kill %1
-docker stop superpromo-dev-pg && docker rm superpromo-dev-pg
 rm -rf .local-blob
 ```
+
+(Also stop the local Postgres from Step 1, if a throwaway container was used for it.)
 
 No commit for this task — it's verification only, and Step 7 already reverted the temporary edit.
 
@@ -1855,3 +1856,4 @@ git commit -m "Document local development and deployment setup"
 - **Spec coverage:** architecture (Task 5, 8), data model (Task 3), cron discovery/scrape/diff/error-isolation (Task 4), frontend map/search/responsive-viewer (Tasks 6–8), Firecrawl/Blob/Postgres integration details (Task 5), setup/git note from the spec (already done prior to this plan; Task 10 covers Vercel-specific setup). All spec sections have a corresponding task.
 - **Type consistency:** `StoreWithFlyers` (Task 3) flows into `Store` (Task 8) and `SearchableStore` (Task 7) consistently; `FirecrawlClient`/`BlobClient` interfaces defined in Task 4 are implemented identically in Task 5's route. `tokubaiImageId`/`blobUrl` field names are consistent across Tasks 3, 4, 6, 8.
 - **No placeholders:** every step has runnable code or exact commands; no TODOs.
+- **Amendment (post Task-3 implementation):** swapped `@vercel/postgres` for `pg` throughout — `@vercel/postgres`'s `sql` client requires Neon's HTTP/WebSocket proxy and cannot reach a plain local Postgres for testing, which the original plan did not anticipate. `pg` is wire-protocol compatible with both local Postgres and Vercel Postgres/Neon in production via the same `POSTGRES_URL`. All affected tasks (1, 3, 4, 9, 10) were updated for consistency; no behavioral or interface changes resulted — `ensureSchema`, `upsertStore`, etc. keep the same signatures.
