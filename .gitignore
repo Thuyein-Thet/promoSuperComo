@@ -6,3 +6,4 @@ node_modules/
 .superpowers/
 .firecrawl/
 .worktrees/
+*.tsbuildinfo
