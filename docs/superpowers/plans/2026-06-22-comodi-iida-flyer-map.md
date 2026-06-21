@@ -723,10 +723,11 @@ git commit -m "Add Postgres data layer for stores and flyers"
   - A `BlobClient` interface:
     ```typescript
     interface BlobClient {
-      upload(tokubaiImageId: string, sourceUrl: string): Promise<string>; // returns blob URL
+      upload(tokubaiStoreId: string, tokubaiImageId: string, sourceUrl: string): Promise<string>; // returns blob URL
       delete(blobUrl: string): Promise<void>;
     }
     ```
+    (Amended post Task-5 review: `upload` takes `tokubaiStoreId` so Blob storage keys are store-scoped — `tokubaiImageId` alone is a Tokubai-CDN-wide ID, not guaranteed unique per store, so two stores could otherwise overwrite each other's flyer blob.)
 - Produces:
   ```typescript
   interface SyncResult {
@@ -783,7 +784,7 @@ describe("syncFlyers", () => {
 
     expect(result.storesProcessed).toBe(1);
     expect(result.storesFailed).toEqual([]);
-    expect(blob.upload).toHaveBeenCalledWith("9416450", expect.stringContaining("9416450.jpg"));
+    expect(blob.upload).toHaveBeenCalledWith("259321", "9416450", expect.stringContaining("9416450.jpg"));
 
     const stores = await getAllStoresWithFlyers();
     expect(stores).toHaveLength(1);
@@ -869,7 +870,7 @@ export interface FirecrawlClient {
 }
 
 export interface BlobClient {
-  upload(tokubaiImageId: string, sourceUrl: string): Promise<string>;
+  upload(tokubaiStoreId: string, tokubaiImageId: string, sourceUrl: string): Promise<string>;
   delete(blobUrl: string): Promise<void>;
 }
 
@@ -896,10 +897,13 @@ async function processStore(
     lng: detail.lng,
   });
 
+  const imagesByUrl = new Map<string, ReturnType<typeof parseFlyerImages>>();
   const currentImageIds = new Set<string>();
   for (const leafletUrl of detail.leafletUrls) {
     const leafletPage = await deps.firecrawl.scrape(leafletUrl);
-    for (const image of parseFlyerImages(leafletPage.markdown)) {
+    const images = parseFlyerImages(leafletPage.markdown);
+    imagesByUrl.set(leafletUrl, images);
+    for (const image of images) {
       currentImageIds.add(image.tokubaiImageId);
     }
   }
@@ -907,11 +911,10 @@ async function processStore(
   const existingImageIds = new Set(await getFlyerImageIdsForStore(store.id));
   const newImageIds = [...currentImageIds].filter((id) => !existingImageIds.has(id));
 
-  for (const leafletUrl of detail.leafletUrls) {
-    const leafletPage = await deps.firecrawl.scrape(leafletUrl);
-    for (const image of parseFlyerImages(leafletPage.markdown)) {
+  for (const images of imagesByUrl.values()) {
+    for (const image of images) {
       if (!newImageIds.includes(image.tokubaiImageId)) continue;
-      const blobUrl = await deps.blob.upload(image.tokubaiImageId, image.originalUrl);
+      const blobUrl = await deps.blob.upload(tokubaiStoreId, image.tokubaiImageId, image.originalUrl);
       await upsertFlyer({ storeId: store.id, tokubaiImageId: image.tokubaiImageId, blobUrl });
     }
   }
@@ -1021,10 +1024,10 @@ function buildFirecrawlClient(): FirecrawlClient {
 
 function buildBlobClient(): BlobClient {
   return {
-    async upload(tokubaiImageId: string, sourceUrl: string) {
+    async upload(tokubaiStoreId: string, tokubaiImageId: string, sourceUrl: string) {
       const response = await fetch(sourceUrl);
       const bytes = await response.arrayBuffer();
-      const blob = await put(`flyers/${tokubaiImageId}.jpg`, Buffer.from(bytes), {
+      const blob = await put(`flyers/${tokubaiStoreId}/${tokubaiImageId}.jpg`, Buffer.from(bytes), {
         access: "public",
         addRandomSuffix: false,
       });
@@ -1042,16 +1045,22 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
-  await ensureSchema();
-  const result = await syncFlyers({
-    firecrawl: buildFirecrawlClient(),
-    blob: buildBlobClient(),
-    concurrency: 8,
-  });
+  try {
+    await ensureSchema();
+    const result = await syncFlyers({
+      firecrawl: buildFirecrawlClient(),
+      blob: buildBlobClient(),
+      concurrency: 8,
+    });
 
-  return NextResponse.json(result);
+    return NextResponse.json(result);
+  } catch (err) {
+    return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
+  }
 }
 ```
+
+(Amended post Task-5 review: the body is wrapped in try/catch so a failure in `ensureSchema()` or the initial chain-page scrape — before per-store error handling in `syncFlyers` applies — returns a structured 500 instead of an opaque crash.)
 
 Create `src/app/api/stores/route.ts`:
 
@@ -1679,12 +1688,14 @@ function buildBlobClient(): BlobClient {
   const dir = path.join(process.cwd(), ".local-blob");
   fs.mkdirSync(dir, { recursive: true });
   return {
-    async upload(tokubaiImageId: string, sourceUrl: string) {
+    async upload(tokubaiStoreId: string, tokubaiImageId: string, sourceUrl: string) {
       const response = await fetch(sourceUrl);
       const bytes = await response.arrayBuffer();
-      const filePath = path.join(dir, `${tokubaiImageId}.jpg`);
+      const storeDir = path.join(dir, tokubaiStoreId);
+      fs.mkdirSync(storeDir, { recursive: true });
+      const filePath = path.join(storeDir, `${tokubaiImageId}.jpg`);
       fs.writeFileSync(filePath, Buffer.from(bytes));
-      return `/local-blob/${tokubaiImageId}.jpg`;
+      return `/local-blob/${tokubaiStoreId}/${tokubaiImageId}.jpg`;
     },
     async delete(blobUrl: string) {
       const filePath = path.join(dir, path.basename(blobUrl));
@@ -1858,3 +1869,5 @@ git commit -m "Document local development and deployment setup"
 - **No placeholders:** every step has runnable code or exact commands; no TODOs.
 - **Amendment (post Task-3 implementation):** swapped `@vercel/postgres` for `pg` throughout — `@vercel/postgres`'s `sql` client requires Neon's HTTP/WebSocket proxy and cannot reach a plain local Postgres for testing, which the original plan did not anticipate. `pg` is wire-protocol compatible with both local Postgres and Vercel Postgres/Neon in production via the same `POSTGRES_URL`. All affected tasks (1, 3, 4, 9, 10) were updated for consistency; no behavioral or interface changes resulted — `ensureSchema`, `upsertStore`, etc. keep the same signatures.
 - **Amendment (post Task-4 implementation):** added `fileParallelism: false` to `vitest.config.ts`. Multiple test files (`db.test.ts`, `sync.test.ts`, and future DB-touching suites) `TRUNCATE` and write to the same shared Postgres database; Vitest's default parallel-file execution raced those writes and corrupted assertions across files (confirmed: 4 spurious failures in default mode, 0 with sequential file execution). Running test files sequentially avoids this without per-file schema isolation. No test code changed.
+- **Amendment (post Task-4 implementation):** `processStore` in `src/lib/sync.ts` originally fetched each leaflet URL via Firecrawl twice (once to compute `currentImageIds`, once again to read `image.originalUrl` for upload) — functionally correct but wasteful against a metered API. Fixed by caching each leaflet URL's parsed `FlyerImage[]` in a `Map` during the first pass and reusing it for the upload pass. Pure internal refactor; `syncFlyers`'s observable behavior, `SyncResult` shape, and DB/Blob call semantics are unchanged.
+- **Amendment (post Task-5 review):** `BlobClient.upload` (Task 4) gained a `tokubaiStoreId` first parameter, and the real adapter in Task 5's cron route keys Blob storage as `flyers/${tokubaiStoreId}/${tokubaiImageId}.jpg` instead of `flyers/${tokubaiImageId}.jpg`. `tokubaiImageId` alone is a Tokubai-CDN-wide image ID, not guaranteed unique per store — without store-scoping, two different stores could collide on the same image ID and silently overwrite each other's flyer Blob. Also added a top-level try/catch in the cron route's `GET` handler so a failure in `ensureSchema()` or the initial chain-page scrape (before `syncFlyers`'s per-store error handling applies) returns a structured `{ error }` 500 response instead of an opaque crash. All affected code blocks in Tasks 4, 5, and 9 were updated for consistency.
