@@ -55,9 +55,17 @@ describe("FlyerMap", () => {
     render(<FlyerMap />);
     await waitFor(() => expect(screen.getAllByTestId("marker")).toHaveLength(2));
 
-    fireEvent.click(screen.getAllByTestId("marker")[0]);
+    // Every marker carries its own Popup as a permanent child (the idiomatic
+    // react-leaflet pattern, letting Leaflet itself handle open/close on
+    // click without remounting the marker). The mock doesn't model Leaflet's
+    // real click-to-open behavior, so we just assert the popup content for
+    // the clicked marker is present, and the mobile panel is not.
+    const markers = screen.getAllByTestId("marker");
+    fireEvent.click(markers[0]);
 
-    expect(screen.getByTestId("popup")).toBeInTheDocument();
+    const popups = screen.getAllByTestId("popup");
+    expect(popups).toHaveLength(2);
+    expect(markers[0]).toContainElement(popups[0]);
     expect(screen.queryByTestId("flyer-panel")).not.toBeInTheDocument();
   });
 

@@ -3,9 +3,23 @@
 import { useEffect, useMemo, useState } from "react";
 import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
 import MarkerClusterGroup from "react-leaflet-cluster";
+import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import markerIcon from "leaflet/dist/images/marker-icon.png";
+import markerIcon2x from "leaflet/dist/images/marker-icon-2x.png";
+import markerShadow from "leaflet/dist/images/marker-shadow.png";
 import { StoreSearch, type SearchableStore } from "./StoreSearch";
 import { FlyerViewer } from "./FlyerViewer";
+
+// Next.js's bundler resolves static image imports (.png) to StaticImageData
+// objects (with a `.src` URL), not plain strings, so we read `.src` here.
+// Without this, Leaflet's default marker icon paths 404 in the browser.
+delete (L.Icon.Default.prototype as any)._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconUrl: markerIcon.src,
+  iconRetinaUrl: markerIcon2x.src,
+  shadowUrl: markerShadow.src,
+});
 
 interface Store extends SearchableStore {
   tokubaiStoreId: string;
@@ -47,7 +61,7 @@ export function FlyerMap() {
               position={[store.lat as number, store.lng as number]}
               eventHandlers={{ click: () => setActiveStoreId(store.id) }}
             >
-              {!isMobile && activeStoreId === store.id && (
+              {!isMobile && (
                 <Popup>
                   <FlyerViewer storeName={store.name} flyers={store.flyers} />
                 </Popup>
