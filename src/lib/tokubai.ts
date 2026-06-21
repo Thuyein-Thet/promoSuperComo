@@ -17,7 +17,7 @@ export interface FlyerImage {
   originalUrl: string;
 }
 
-const STORE_LINK_RE = /\[(.*?コモディイイダ.*?)\]\((https:\/\/tokubai\.co\.jp\/[^)]*\/(\d+))\)/gs;
+const STORE_LINK_RE = /\[([\s\S]*?コモディイイダ[\s\S]*?)\]\((https:\/\/tokubai\.co\.jp\/[^)]*\/(\d+))\)/g;
 
 export function parseStoreList(markdown: string): StoreListing[] {
   const results: StoreListing[] = [];
