@@ -16,7 +16,7 @@ describe("FlyerViewer", () => {
 
   it("shows a message instead of thumbnails when there are no flyers", () => {
     render(<FlyerViewer storeName="コモディイイダ 鹿浜店" flyers={[]} />);
-    expect(screen.getByText(/no current flyers/i)).toBeInTheDocument();
+    expect(screen.getByText(/チラシはありません/)).toBeInTheDocument();
   });
 
   it("opens a lightbox with the full-size image when a thumbnail is clicked", () => {

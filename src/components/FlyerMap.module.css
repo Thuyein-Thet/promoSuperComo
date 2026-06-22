@@ -1,0 +1,100 @@
+.wrapper {
+  position: relative;
+  height: 100vh;
+  width: 100%;
+}
+
+.searchBar {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  right: 16px;
+  z-index: 500;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.searchBar > * {
+  width: 100%;
+  max-width: 420px;
+}
+
+.map {
+  height: 100%;
+  width: 100%;
+}
+
+.panel {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 600;
+  background: var(--shoji);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  box-shadow: var(--shadow-card);
+  padding: 16px 20px 28px;
+  animation: slideUp 0.22s ease-out;
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+.panelHeader {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 4px;
+}
+
+.closeButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  color: var(--nezumi);
+}
+
+.closeButton:hover {
+  background: var(--tatami);
+}
+
+.popupContent {
+  font-family: var(--font-body);
+}
+
+:global(.leaflet-popup-content-wrapper) {
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+}
+
+:global(.leaflet-popup-content) {
+  margin: 14px 16px;
+}
+
+:global(.leaflet-popup-tip) {
+  box-shadow: none;
+}
+
+:global(.marker-cluster-small),
+:global(.marker-cluster-medium),
+:global(.marker-cluster-large) {
+  background-color: var(--matsu-soft) !important;
+}
+
+:global(.marker-cluster-small div),
+:global(.marker-cluster-medium div),
+:global(.marker-cluster-large div) {
+  background-color: var(--matsu) !important;
+  color: var(--shoji) !important;
+  font-family: var(--font-data) !important;
+  font-weight: 700 !important;
+}

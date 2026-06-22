@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import styles from "./FlyerViewer.module.css";
 
 export interface FlyerViewerProps {
   storeName: string;
@@ -11,39 +12,27 @@ export function FlyerViewer({ storeName, flyers }: FlyerViewerProps) {
   const [openUrl, setOpenUrl] = useState<string | null>(null);
 
   return (
-    <div>
-      <h3>{storeName}</h3>
+    <div className={styles.card}>
+      <h3 className={styles.storeName}>{storeName}</h3>
       {flyers.length === 0 ? (
-        <p>No current flyers for this store.</p>
+        <p className={styles.empty}>現在掲載中のチラシはありません。</p>
       ) : (
-        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+        <div className={styles.grid}>
           {flyers.map((flyer) => (
             <img
               key={flyer.tokubaiImageId}
               data-testid="flyer-thumbnail"
+              className={styles.thumbnail}
               src={flyer.blobUrl}
               alt={`Flyer for ${storeName}`}
-              style={{ width: "80px", height: "auto", cursor: "pointer" }}
               onClick={() => setOpenUrl(flyer.blobUrl)}
             />
           ))}
         </div>
       )}
       {openUrl && (
-        <div
-          data-testid="flyer-lightbox"
-          onClick={() => setOpenUrl(null)}
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.8)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 1000,
-          }}
-        >
-          <img src={openUrl} alt={`Full-size flyer for ${storeName}`} style={{ maxWidth: "90vw", maxHeight: "90vh" }} />
+        <div data-testid="flyer-lightbox" className={styles.lightbox} onClick={() => setOpenUrl(null)}>
+          <img src={openUrl} alt={`Full-size flyer for ${storeName}`} className={styles.lightboxImage} />
         </div>
       )}
     </div>

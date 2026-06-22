@@ -5,21 +5,27 @@ import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
 import MarkerClusterGroup from "react-leaflet-cluster";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import markerIcon from "leaflet/dist/images/marker-icon.png";
-import markerIcon2x from "leaflet/dist/images/marker-icon-2x.png";
-import markerShadow from "leaflet/dist/images/marker-shadow.png";
 import { StoreSearch, type SearchableStore } from "./StoreSearch";
 import { FlyerViewer } from "./FlyerViewer";
+import styles from "./FlyerMap.module.css";
 
-// Next.js/Turbopack resolves leaflet's *.png imports (from node_modules) to
-// plain string URLs, not StaticImageData objects — confirmed via a runtime
-// probe in both `next dev` and `next build && next start`. Using `.src`
-// here would be undefined and crash Leaflet at marker-mount time.
-delete (L.Icon.Default.prototype as any)._getIconUrl;
-L.Icon.Default.mergeOptions({
-  iconUrl: markerIcon,
-  iconRetinaUrl: markerIcon2x,
-  shadowUrl: markerShadow,
+// A pin in the "matsu" pine-green accent, replacing Leaflet's default blue
+// teardrop. Inlined as an SVG data URI rather than a static asset import —
+// Next.js/Turbopack resolves *.png imports from node_modules to plain string
+// URLs (not StaticImageData), which previously caused a runtime crash when
+// accessed via `.src`; an inline SVG sidesteps the asset-import path entirely.
+const STORE_ICON = L.icon({
+  iconUrl:
+    "data:image/svg+xml;base64," +
+    btoa(
+      `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="38" viewBox="0 0 28 38">
+        <path d="M14 0C6.3 0 0 6.3 0 14c0 9.8 14 24 14 24s14-14.2 14-24c0-7.7-6.3-14-14-14z" fill="#2D5A4A"/>
+        <circle cx="14" cy="14" r="5.5" fill="#FAFAF7"/>
+      </svg>`,
+    ),
+  iconSize: [28, 38],
+  iconAnchor: [14, 38],
+  popupAnchor: [0, -34],
 });
 
 interface Store extends SearchableStore {
@@ -48,9 +54,11 @@ export function FlyerMap() {
   const isMobile = typeof window !== "undefined" && window.innerWidth < MOBILE_BREAKPOINT_PX;
 
   return (
-    <div>
-      <StoreSearch stores={geocodedStores} onMatchesChange={setMatchedIds} />
-      <MapContainer center={[35.6895, 139.6917]} zoom={10} style={{ height: "80vh", width: "100%" }}>
+    <div className={styles.wrapper}>
+      <div className={styles.searchBar}>
+        <StoreSearch stores={geocodedStores} onMatchesChange={setMatchedIds} />
+      </div>
+      <MapContainer center={[35.6895, 139.6917]} zoom={10} className={styles.map}>
         <TileLayer
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
@@ -60,11 +68,14 @@ export function FlyerMap() {
             <Marker
               key={store.id}
               position={[store.lat as number, store.lng as number]}
+              icon={STORE_ICON}
               eventHandlers={{ click: () => setActiveStoreId(store.id) }}
             >
               {!isMobile && (
                 <Popup>
-                  <FlyerViewer storeName={store.name} flyers={store.flyers} />
+                  <div className={styles.popupContent}>
+                    <FlyerViewer storeName={store.name} flyers={store.flyers} />
+                  </div>
                 </Popup>
               )}
             </Marker>
@@ -72,11 +83,18 @@ export function FlyerMap() {
         </MarkerClusterGroup>
       </MapContainer>
       {isMobile && activeStore && (
-        <div
-          data-testid="flyer-panel"
-          style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: "white", padding: "16px", boxShadow: "0 -2px 8px rgba(0,0,0,0.2)" }}
-        >
-          <button onClick={() => setActiveStoreId(null)}>Close</button>
+        <div data-testid="flyer-panel" className={styles.panel}>
+          <div className={styles.panelHeader}>
+            <button
+              className={styles.closeButton}
+              onClick={() => setActiveStoreId(null)}
+              aria-label="閉じる"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              </svg>
+            </button>
+          </div>
           <FlyerViewer storeName={activeStore.name} flyers={activeStore.flyers} />
         </div>
       )}
