@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { pool, ensureSchema, getAllStoresWithFlyers } from "./db";
-import { syncFlyers } from "./sync";
+import { syncFlyers, rateLimited } from "./sync";
 
 const CHAIN_URL = "https://tokubai.co.jp/%E3%82%B3%E3%83%A2%E3%83%87%E3%82%A3%E3%82%A4%E3%82%A4%E3%83%80/leaflet";
 
@@ -37,7 +37,7 @@ describe("syncFlyers", () => {
       delete: vi.fn(async () => {}),
     };
 
-    const result = await syncFlyers({ firecrawl, blob, concurrency: 2 });
+    const result = await syncFlyers({ firecrawl, blob, concurrency: 2, requestsPerMinute: Infinity });
 
     expect(result.storesProcessed).toBe(1);
     expect(result.storesFailed).toEqual([]);
@@ -66,7 +66,7 @@ describe("syncFlyers", () => {
     };
     const blob = { upload: vi.fn(async (_storeId: string, id: string) => `https://blob.example/${id}.jpg`), delete: vi.fn(async () => {}) };
 
-    const result = await syncFlyers({ firecrawl, blob, concurrency: 2 });
+    const result = await syncFlyers({ firecrawl, blob, concurrency: 2, requestsPerMinute: Infinity });
 
     expect(result.storesProcessed).toBe(1);
     expect(result.storesFailed).toEqual([{ tokubaiStoreId: "259321", error: "network error" }]);
@@ -88,7 +88,7 @@ describe("syncFlyers", () => {
     };
     const blob = { upload: vi.fn(async (_storeId: string, id: string) => `https://blob.example/${id}.jpg`), delete: vi.fn(async () => {}) };
 
-    await syncFlyers({ firecrawl, blob, concurrency: 2 });
+    await syncFlyers({ firecrawl, blob, concurrency: 2, requestsPerMinute: Infinity });
 
     const emptyLeafletMd = `no images today`;
     firecrawl.scrape = vi.fn(async (url: string) => {
@@ -99,7 +99,7 @@ describe("syncFlyers", () => {
       throw new Error(`unexpected url ${url}`);
     });
 
-    await syncFlyers({ firecrawl, blob, concurrency: 2 });
+    await syncFlyers({ firecrawl, blob, concurrency: 2, requestsPerMinute: Infinity });
 
     expect(blob.delete).toHaveBeenCalledWith("https://blob.example/9416450.jpg");
     const stores = await getAllStoresWithFlyers();
@@ -125,7 +125,7 @@ describe("syncFlyers", () => {
     };
     const blob = { upload: vi.fn(async (_storeId: string, id: string) => `https://blob.example/${id}.jpg`), delete: vi.fn(async () => {}) };
 
-    const result = await syncFlyers({ firecrawl, blob, concurrency: 2 });
+    const result = await syncFlyers({ firecrawl, blob, concurrency: 2, requestsPerMinute: Infinity });
 
     expect(result.storesProcessed).toBe(2);
     expect(result.storesFailed).toEqual([]);
@@ -136,5 +136,76 @@ describe("syncFlyers", () => {
     const stores = await getAllStoresWithFlyers();
     expect(stores).toHaveLength(2);
     expect(new Set(stores.map((s) => s.tokubaiStoreId))).toEqual(new Set(["259321", "7530"]));
+  });
+
+});
+
+describe("rateLimited", () => {
+  it("returns the client unchanged when requestsPerMinute is not finite", () => {
+    const client = { scrape: vi.fn(async () => ({ markdown: "" })) };
+    expect(rateLimited(client, Infinity)).toBe(client);
+  });
+
+  it("lets the first call through immediately, with no delay", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = { scrape: vi.fn(async (url: string) => ({ markdown: url })) };
+      const limited = rateLimited(client, 60);
+
+      const promise = limited.scrape("https://example.com/a");
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(client.scrape).toHaveBeenCalledTimes(1);
+      await expect(promise).resolves.toEqual({ markdown: "https://example.com/a" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("delays a second call until the minimum interval has elapsed", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = { scrape: vi.fn(async (url: string) => ({ markdown: url })) };
+      const limited = rateLimited(client, 60); // one request every 1000ms
+
+      const first = limited.scrape("https://example.com/a");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(client.scrape).toHaveBeenCalledTimes(1);
+
+      const second = limited.scrape("https://example.com/b");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(client.scrape).toHaveBeenCalledTimes(1); // still waiting
+
+      await vi.advanceTimersByTimeAsync(999);
+      expect(client.scrape).toHaveBeenCalledTimes(1); // not yet — one ms short
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(client.scrape).toHaveBeenCalledTimes(2); // the 1000ms interval has elapsed
+
+      await Promise.all([first, second]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not delay calls that are already spaced far enough apart", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = { scrape: vi.fn(async (url: string) => ({ markdown: url })) };
+      const limited = rateLimited(client, 60); // one request every 1000ms
+
+      await limited.scrape("https://example.com/a");
+      await vi.advanceTimersByTimeAsync(5000); // plenty of real spacing
+
+      const before = Date.now();
+      const promise = limited.scrape("https://example.com/b");
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(client.scrape).toHaveBeenCalledTimes(2);
+      await promise;
+      expect(Date.now()).toBe(before); // resolved without waiting
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

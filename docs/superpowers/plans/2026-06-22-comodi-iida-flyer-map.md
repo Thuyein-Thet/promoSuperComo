@@ -734,8 +734,9 @@ git commit -m "Add Postgres data layer for stores and flyers"
     storesProcessed: number;
     storesFailed: { tokubaiStoreId: string; error: string }[];
   }
-  async function syncFlyers(deps: { firecrawl: FirecrawlClient; blob: BlobClient; concurrency?: number }): Promise<SyncResult>;
+  async function syncFlyers(deps: { firecrawl: FirecrawlClient; blob: BlobClient; concurrency?: number; requestsPerMinute?: number }): Promise<SyncResult>;
   ```
+  (Amended post real-data testing: added `requestsPerMinute` — see the Self-Review Notes amendment on proactive rate limiting.)
 
 - [ ] **Step 1: Write failing tests with fake Firecrawl/Blob clients**
 
@@ -881,6 +882,28 @@ export interface SyncResult {
 
 const CHAIN_LEAFLET_URL = "https://tokubai.co.jp/%E3%82%B3%E3%83%A2%E3%83%87%E3%82%A3%E3%82%A4%E3%82%A4%E3%83%80/leaflet";
 
+export function rateLimited(client: FirecrawlClient, requestsPerMinute: number): FirecrawlClient {
+  if (!Number.isFinite(requestsPerMinute)) return client;
+
+  const minIntervalMs = 60_000 / requestsPerMinute;
+  let nextAvailableAt = 0;
+
+  return {
+    async scrape(url: string) {
+      const now = Date.now();
+      const scheduledAt = Math.max(now, nextAvailableAt);
+      nextAvailableAt = scheduledAt + minIntervalMs;
+
+      const waitMs = scheduledAt - now;
+      if (waitMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+      }
+
+      return client.scrape(url);
+    },
+  };
+}
+
 async function discoverAllStores(firecrawl: FirecrawlClient): Promise<ReturnType<typeof parseStoreList>> {
   const allStores: ReturnType<typeof parseStoreList> = [];
   const seen = new Set<string>();
@@ -961,14 +984,16 @@ export async function syncFlyers(deps: {
   firecrawl: FirecrawlClient;
   blob: BlobClient;
   concurrency?: number;
+  requestsPerMinute?: number;
 }): Promise<SyncResult> {
-  const stores = await discoverAllStores(deps.firecrawl);
+  const firecrawl = rateLimited(deps.firecrawl, deps.requestsPerMinute ?? 80);
+  const stores = await discoverAllStores(firecrawl);
 
   const result: SyncResult = { storesProcessed: 0, storesFailed: [] };
 
   await runBatched(stores, deps.concurrency ?? 3, async (store) => {
     try {
-      await processStore(store.tokubaiStoreId, store.detailUrl, deps);
+      await processStore(store.tokubaiStoreId, store.detailUrl, { ...deps, firecrawl });
       result.storesProcessed++;
     } catch (err) {
       result.storesFailed.push({
@@ -1909,4 +1934,5 @@ git commit -m "Document local development and deployment setup"
 - **Amendment (post Task-5 review):** `BlobClient.upload` (Task 4) gained a `tokubaiStoreId` first parameter, and the real adapter in Task 5's cron route keys Blob storage as `flyers/${tokubaiStoreId}/${tokubaiImageId}.jpg` instead of `flyers/${tokubaiImageId}.jpg`. `tokubaiImageId` alone is a Tokubai-CDN-wide image ID, not guaranteed unique per store — without store-scoping, two different stores could collide on the same image ID and silently overwrite each other's flyer Blob. Also added a top-level try/catch in the cron route's `GET` handler so a failure in `ensureSchema()` or the initial chain-page scrape (before `syncFlyers`'s per-store error handling applies) returns a structured `{ error }` 500 response instead of an opaque crash. All affected code blocks in Tasks 4, 5, and 9 were updated for consistency.
 - **Amendment (post Task-8 implementation):** three real bugs found and fixed in `FlyerMap.tsx`/`page.tsx`/the test file, all confirmed by independent reproduction (reverting each fix and observing the original failure), not just trusted: (1) `geocodedStores` needed `useMemo` to avoid an infinite render loop caused by `StoreSearch`'s `useEffect` depending on an unstable array reference; (2) the test file needed its own `vi.mock("react-leaflet-cluster", ...)` since that package's `MarkerClusterGroup` uses real `@react-leaflet/core` context hooks independent of the `react-leaflet` mock; (3) `page.tsx` needed to become a client component using `next/dynamic({ ssr: false })` instead of a static import, since Leaflet touches `window` at module load time and crashes Next.js's server-side prerendering otherwise. All three code blocks above reflect the corrected versions.
 - **Amendment (post Task-9 real-data verification):** two further real bugs surfaced only by testing against live data in a real browser — invisible to every mocked unit test, `tsc`, and `next build`, since those never exercise actual Leaflet DOM/rendering behavior. (1) `<Popup>` was conditionally rendered only when `activeStoreId === store.id`, which changed a clicked marker's children and caused Leaflet to remount the marker DOM node, interrupting its own click-to-open-popup handling for the first click — a second click on the same marker worked since no further remount occurred. Fixed by rendering `<Popup>` unconditionally for non-mobile markers; Leaflet's native open/close handling works correctly once the marker's children are stable across renders. (2) Leaflet's default marker icon assets (`marker-icon.png` etc.) need to be explicitly imported and wired via `L.Icon.Default.mergeOptions(...)`, since this bundler doesn't auto-resolve their relative paths — but the first attempt at this fix used `markerIcon.src` assuming Next.js's bundler returns `StaticImageData` objects for all `.png` imports; in this project's actual Next.js 16.2.9 + Turbopack setup, `.png` imports from `node_modules` (as opposed to app source) resolve to plain string URLs instead, so `.src` was `undefined` and crashed Leaflet with `Error: iconUrl not set in Icon options`, rendering zero markers — confirmed via a live browser probe in both `next dev` and `next build && next start`. The corrected fix uses the imported identifiers directly (`iconUrl: markerIcon`, not `markerIcon.src`). Both fixes were independently re-verified via real headless-browser automation against a fresh production build with seeded real data: markers render as valid loaded images at Leaflet's correct native dimensions (25×41px), and a single click opens the popup, with zero console/page errors.
-- **Correction (post Task-9, found by the user):** Task 9's original conclusion that "20 is the real, current store count" was **wrong** — the chain listing page paginates via `?page=N` (20 stores per page, 5 pages, 82 total), which Task 9's verification missed because it only ever scraped page 1. Fixed in two places: (1) `parseStoreList`'s regex (`STORE_LINK_RE` in `src/lib/tokubai.ts`) was tightened to require the link text to end in "店" immediately before the closing `]` — the old, looser regex could span across unrelated markdown (e.g. matching the page header's logo link merely because "コモディイイダ" appeared somewhere earlier in the document) and produced a false-positive `tokubai_store_id = "1"` row; (2) `syncFlyers` (`src/lib/sync.ts`) now calls a new `discoverAllStores` helper that walks `?page=1`, `?page=2`, ... until a page yields zero new store IDs, instead of scraping only the unparameterized URL. Both fixes verified against the real site: pages 1-4 each yield exactly 20 stores, page 5 yields 2, page 6 yields 0 — 82 total, matching the page's own "82 店舗" header exactly. Also lowered cron concurrency from 8 to 3 (see the Global Constraints amendment above) since discovering and processing all 82 stores surfaces real Firecrawl rate-limit errors at higher concurrency that a 20-store run never did.
+- **Correction (post Task-9, found by the user):** Task 9's original conclusion that "20 is the real, current store count" was **wrong** — the chain listing page paginates via `?page=N` (20 stores per page, 5 pages, 82 total), which Task 9's verification missed because it only ever scraped page 1. Fixed in two places: (1) `parseStoreList`'s regex (`STORE_LINK_RE` in `src/lib/tokubai.ts`) was tightened to require the link text to end in "店" immediately before the closing `]` — the old, looser regex could span across unrelated markdown (e.g. matching the page header's logo link merely because "コモディイイダ" appeared somewhere earlier in the document) and produced a false-positive `tokubai_store_id = "1"` row; (2) `syncFlyers` (`src/lib/sync.ts`) now calls a new `discoverAllStores` helper that walks `?page=1`, `?page=2`, ... until a page yields zero new store IDs, instead of scraping only the unparameterized URL. Both fixes verified against the real site: pages 1-4 each yield exactly 20 stores, page 5 yields 2, page 6 yields 0 — 82 total, matching the page's own "82 店舗" header exactly.
+- **Amendment (post pagination fix, real-data testing):** lowering concurrency alone (8 → 3) did not reliably fix Firecrawl's 100 req/min rate limit — even at concurrency 3, discovering and processing all 82 stores (~3 requests/store) still hit the limit partway through, since concurrency only bounds *simultaneous* requests, not the *rate* at which they fire over a rolling window. Added a `rateLimited()` wrapper in `src/lib/sync.ts` that spaces every `FirecrawlClient.scrape` call so the request rate stays under a configurable `requestsPerMinute` budget (default 80, comfortably under the 100/min hard cap), regardless of concurrency. `syncFlyers` applies this wrapper to the injected client before passing it to both `discoverAllStores` and `processStore`. Tests pass `requestsPerMinute: Infinity` to disable throttling (returns the original client unchanged) so existing integration tests run at full speed; the limiter itself is unit-tested in isolation with fake timers, separate from the DB-backed integration tests (mixing fake timers with real Postgres I/O in the same test caused hangs/races and was abandoned as a test strategy). Verified against the real site: 81 of 82 stores processed successfully with zero rate-limit failures, taking several minutes (the new, deliberate cost of staying under the limit).

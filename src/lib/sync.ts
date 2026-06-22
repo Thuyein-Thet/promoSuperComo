@@ -17,6 +17,28 @@ export interface SyncResult {
 
 const CHAIN_LEAFLET_URL = "https://tokubai.co.jp/%E3%82%B3%E3%83%A2%E3%83%87%E3%82%A3%E3%82%A4%E3%82%A4%E3%83%80/leaflet";
 
+export function rateLimited(client: FirecrawlClient, requestsPerMinute: number): FirecrawlClient {
+  if (!Number.isFinite(requestsPerMinute)) return client;
+
+  const minIntervalMs = 60_000 / requestsPerMinute;
+  let nextAvailableAt = 0;
+
+  return {
+    async scrape(url: string) {
+      const now = Date.now();
+      const scheduledAt = Math.max(now, nextAvailableAt);
+      nextAvailableAt = scheduledAt + minIntervalMs;
+
+      const waitMs = scheduledAt - now;
+      if (waitMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+      }
+
+      return client.scrape(url);
+    },
+  };
+}
+
 async function discoverAllStores(firecrawl: FirecrawlClient): Promise<ReturnType<typeof parseStoreList>> {
   const allStores: ReturnType<typeof parseStoreList> = [];
   const seen = new Set<string>();
@@ -97,14 +119,16 @@ export async function syncFlyers(deps: {
   firecrawl: FirecrawlClient;
   blob: BlobClient;
   concurrency?: number;
+  requestsPerMinute?: number;
 }): Promise<SyncResult> {
-  const stores = await discoverAllStores(deps.firecrawl);
+  const firecrawl = rateLimited(deps.firecrawl, deps.requestsPerMinute ?? 80);
+  const stores = await discoverAllStores(firecrawl);
 
   const result: SyncResult = { storesProcessed: 0, storesFailed: [] };
 
   await runBatched(stores, deps.concurrency ?? 8, async (store) => {
     try {
-      await processStore(store.tokubaiStoreId, store.detailUrl, deps);
+      await processStore(store.tokubaiStoreId, store.detailUrl, { ...deps, firecrawl });
       result.storesProcessed++;
     } catch (err) {
       result.storesFailed.push({
