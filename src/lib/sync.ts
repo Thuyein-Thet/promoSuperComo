@@ -1,8 +1,8 @@
 import { parseStoreList, parseStoreDetail, parseFlyerImages } from "./tokubai";
 import { upsertStore, getFlyerImageIdsForStore, upsertFlyer, deleteFlyersNotIn } from "./db";
 
-export interface FirecrawlClient {
-  scrape(url: string): Promise<{ markdown: string }>;
+export interface HttpClient {
+  fetchText(url: string): Promise<string>;
 }
 
 export interface BlobClient {
@@ -17,36 +17,14 @@ export interface SyncResult {
 
 const CHAIN_LEAFLET_URL = "https://tokubai.co.jp/%E3%82%B3%E3%83%A2%E3%83%87%E3%82%A3%E3%82%A4%E3%82%A4%E3%83%80/leaflet";
 
-export function rateLimited(client: FirecrawlClient, requestsPerMinute: number): FirecrawlClient {
-  if (!Number.isFinite(requestsPerMinute)) return client;
-
-  const minIntervalMs = 60_000 / requestsPerMinute;
-  let nextAvailableAt = 0;
-
-  return {
-    async scrape(url: string) {
-      const now = Date.now();
-      const scheduledAt = Math.max(now, nextAvailableAt);
-      nextAvailableAt = scheduledAt + minIntervalMs;
-
-      const waitMs = scheduledAt - now;
-      if (waitMs > 0) {
-        await new Promise((resolve) => setTimeout(resolve, waitMs));
-      }
-
-      return client.scrape(url);
-    },
-  };
-}
-
-async function discoverAllStores(firecrawl: FirecrawlClient): Promise<ReturnType<typeof parseStoreList>> {
+async function discoverAllStores(http: HttpClient): Promise<ReturnType<typeof parseStoreList>> {
   const allStores: ReturnType<typeof parseStoreList> = [];
   const seen = new Set<string>();
 
   for (let page = 1; ; page++) {
     const pageUrl = page === 1 ? CHAIN_LEAFLET_URL : `${CHAIN_LEAFLET_URL}?page=${page}`;
-    const chainPage = await firecrawl.scrape(pageUrl);
-    const pageStores = parseStoreList(chainPage.markdown);
+    const html = await http.fetchText(pageUrl);
+    const pageStores = parseStoreList(html);
 
     const newStores = pageStores.filter((store) => !seen.has(store.tokubaiStoreId));
     if (newStores.length === 0) break;
@@ -63,10 +41,10 @@ async function discoverAllStores(firecrawl: FirecrawlClient): Promise<ReturnType
 async function processStore(
   tokubaiStoreId: string,
   detailUrl: string,
-  deps: { firecrawl: FirecrawlClient; blob: BlobClient },
+  deps: { http: HttpClient; blob: BlobClient },
 ): Promise<void> {
-  const detailPage = await deps.firecrawl.scrape(detailUrl);
-  const detail = parseStoreDetail(detailPage.markdown);
+  const detailHtml = await deps.http.fetchText(detailUrl);
+  const detail = parseStoreDetail(detailHtml);
 
   const store = await upsertStore({
     tokubaiStoreId,
@@ -76,26 +54,19 @@ async function processStore(
     lng: detail.lng,
   });
 
-  const imagesByUrl = new Map<string, ReturnType<typeof parseFlyerImages>>();
-  const currentImageIds = new Set<string>();
-  for (const leafletUrl of detail.leafletUrls) {
-    const leafletPage = await deps.firecrawl.scrape(leafletUrl);
-    const images = parseFlyerImages(leafletPage.markdown);
-    imagesByUrl.set(leafletUrl, images);
-    for (const image of images) {
-      currentImageIds.add(image.tokubaiImageId);
-    }
-  }
+  // Any one leaflet page lists every currently-active leaflet for the store
+  // (confirmed: the page's embedded view_state JSON includes all of them),
+  // so we only need to fetch the first leaflet URL, not every one.
+  const currentImages =
+    detail.leafletUrls.length > 0 ? parseFlyerImages(await deps.http.fetchText(detail.leafletUrls[0])) : [];
+  const currentImageIds = new Set(currentImages.map((image) => image.tokubaiImageId));
 
   const existingImageIds = new Set(await getFlyerImageIdsForStore(store.id));
-  const newImageIds = [...currentImageIds].filter((id) => !existingImageIds.has(id));
+  const newImages = currentImages.filter((image) => !existingImageIds.has(image.tokubaiImageId));
 
-  for (const images of imagesByUrl.values()) {
-    for (const image of images) {
-      if (!newImageIds.includes(image.tokubaiImageId)) continue;
-      const blobUrl = await deps.blob.upload(tokubaiStoreId, image.tokubaiImageId, image.originalUrl);
-      await upsertFlyer({ storeId: store.id, tokubaiImageId: image.tokubaiImageId, blobUrl });
-    }
+  for (const image of newImages) {
+    const blobUrl = await deps.blob.upload(tokubaiStoreId, image.tokubaiImageId, image.originalUrl);
+    await upsertFlyer({ storeId: store.id, tokubaiImageId: image.tokubaiImageId, blobUrl });
   }
 
   const deleted = await deleteFlyersNotIn(store.id, [...currentImageIds]);
@@ -116,19 +87,17 @@ async function runBatched<T>(items: T[], concurrency: number, fn: (item: T) => P
 }
 
 export async function syncFlyers(deps: {
-  firecrawl: FirecrawlClient;
+  http: HttpClient;
   blob: BlobClient;
   concurrency?: number;
-  requestsPerMinute?: number;
 }): Promise<SyncResult> {
-  const firecrawl = rateLimited(deps.firecrawl, deps.requestsPerMinute ?? 80);
-  const stores = await discoverAllStores(firecrawl);
+  const stores = await discoverAllStores(deps.http);
 
   const result: SyncResult = { storesProcessed: 0, storesFailed: [] };
 
-  await runBatched(stores, deps.concurrency ?? 8, async (store) => {
+  await runBatched(stores, deps.concurrency ?? 5, async (store) => {
     try {
-      await processStore(store.tokubaiStoreId, store.detailUrl, { ...deps, firecrawl });
+      await processStore(store.tokubaiStoreId, store.detailUrl, deps);
       result.storesProcessed++;
     } catch (err) {
       result.storesFailed.push({

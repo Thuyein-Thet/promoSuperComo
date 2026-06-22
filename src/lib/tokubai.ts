@@ -1,3 +1,5 @@
+import * as cheerio from "cheerio";
+
 export interface StoreListing {
   tokubaiStoreId: string;
   name: string;
@@ -17,52 +19,67 @@ export interface FlyerImage {
   originalUrl: string;
 }
 
-const STORE_LINK_RE = /\[(?:[\s\S]*?\n)?(コモディイイダ[^\n\]]*?店)\]\((https:\/\/tokubai\.co\.jp\/[^)]*\/(\d+))\)/g;
+const BASE_URL = "https://tokubai.co.jp";
+const MAP_LINK_RE = /maps\/@(-?\d+\.\d+),(-?\d+\.\d+)/;
+const ORIGINAL_IMAGE_RE = /https:\/\/image\.tokubai\.co\.jp\/images\/bargain_office_leaflets\/o=true\/(\d+)\.jpg(\?\d+)?/g;
 
-export function parseStoreList(markdown: string): StoreListing[] {
+export function parseStoreList(html: string): StoreListing[] {
+  const $ = cheerio.load(html);
   const results: StoreListing[] = [];
   const seen = new Set<string>();
-  for (const match of markdown.matchAll(STORE_LINK_RE)) {
-    const [, name, detailUrl, tokubaiStoreId] = match;
-    if (seen.has(tokubaiStoreId)) continue;
+
+  $("div[class^='shop_leaflet_index_card ']").each((_, el) => {
+    const card = $(el);
+    const classAttr = card.attr("class") ?? "";
+    const idMatch = classAttr.match(/shop_(\d+)/);
+    if (!idMatch) return;
+    const tokubaiStoreId = idMatch[1];
+    if (seen.has(tokubaiStoreId)) return;
+
+    const name = card.find(".name_text").first().text().trim();
+    const href = card.find("a.shop_leaflet_index_card_header").first().attr("href");
+    if (!name || !href) return;
+
     seen.add(tokubaiStoreId);
-    results.push({ tokubaiStoreId, name: name.trim(), detailUrl });
-  }
+    results.push({ tokubaiStoreId, name, detailUrl: new URL(href, BASE_URL).toString() });
+  });
+
   return results;
 }
 
-const MAP_LINK_RE = /\[([^\]]+)\]\(https:\/\/www\.google\.com\/maps\/@(-?\d+\.\d+),(-?\d+\.\d+)/;
-const LEAFLET_URL_RE = /\((https:\/\/tokubai\.co\.jp\/[^)]*\/leaflets\/\d+)\)/g;
-const STORE_NAME_RE = /\[([^\]]*コモディイイダ[^\]]*)\]/;
+export function parseStoreDetail(html: string): StoreDetail {
+  const $ = cheerio.load(html);
 
-export function parseStoreDetail(markdown: string): StoreDetail {
-  const nameMatch = markdown.match(STORE_NAME_RE);
-  const mapMatch = markdown.match(MAP_LINK_RE);
+  const name = $("a.shop_name").first().text().trim();
+
+  const mapLink = $(".address a[href*='maps']").first();
+  const mapHref = mapLink.attr("href") ?? "";
+  const mapMatch = mapHref.match(MAP_LINK_RE);
 
   const leafletUrls: string[] = [];
   const seen = new Set<string>();
-  for (const match of markdown.matchAll(LEAFLET_URL_RE)) {
-    const url = match[1];
-    if (seen.has(url)) continue;
+  $("a[href*='/leaflets/']").each((_, el) => {
+    const href = $(el).attr("href");
+    if (!href) return;
+    const url = new URL(href, BASE_URL).toString();
+    if (seen.has(url)) return;
     seen.add(url);
     leafletUrls.push(url);
-  }
+  });
 
   return {
-    name: nameMatch ? nameMatch[1].trim() : "",
-    address: mapMatch ? mapMatch[1].trim() : null,
-    lat: mapMatch ? parseFloat(mapMatch[2]) : null,
-    lng: mapMatch ? parseFloat(mapMatch[3]) : null,
+    name,
+    address: mapMatch ? mapLink.text().trim() : null,
+    lat: mapMatch ? parseFloat(mapMatch[1]) : null,
+    lng: mapMatch ? parseFloat(mapMatch[2]) : null,
     leafletUrls,
   };
 }
 
-const ORIGINAL_IMAGE_RE = /https:\/\/image\.tokubai\.co\.jp\/images\/bargain_office_leaflets\/o=true\/(\d+)\.jpg(\?\d+)?/g;
-
-export function parseFlyerImages(markdown: string): FlyerImage[] {
+export function parseFlyerImages(html: string): FlyerImage[] {
   const results: FlyerImage[] = [];
   const seen = new Set<string>();
-  for (const match of markdown.matchAll(ORIGINAL_IMAGE_RE)) {
+  for (const match of html.matchAll(ORIGINAL_IMAGE_RE)) {
     const [originalUrl, tokubaiImageId] = match;
     if (seen.has(tokubaiImageId)) continue;
     seen.add(tokubaiImageId);

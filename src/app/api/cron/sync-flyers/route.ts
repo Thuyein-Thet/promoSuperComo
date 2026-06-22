@@ -1,17 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
-import Firecrawl from "firecrawl";
 import { put, del } from "@vercel/blob";
 import { ensureSchema } from "@/lib/db";
-import { syncFlyers, type FirecrawlClient, type BlobClient } from "@/lib/sync";
+import { syncFlyers, type HttpClient, type BlobClient } from "@/lib/sync";
 
 export const maxDuration = 300;
 
-function buildFirecrawlClient(): FirecrawlClient {
-  const client = new Firecrawl({ apiKey: process.env.FIRECRAWL_API_KEY! });
+const USER_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+
+function buildHttpClient(): HttpClient {
   return {
-    async scrape(url: string) {
-      const doc = await client.scrape(url);
-      return { markdown: doc.markdown ?? "" };
+    async fetchText(url: string) {
+      const response = await fetch(url, { headers: { "User-Agent": USER_AGENT } });
+      if (!response.ok) {
+        throw new Error(`fetch failed for ${url}: ${response.status} ${response.statusText}`);
+      }
+      return response.text();
     },
   };
 }
@@ -42,9 +46,9 @@ export async function GET(request: NextRequest) {
   try {
     await ensureSchema();
     const result = await syncFlyers({
-      firecrawl: buildFirecrawlClient(),
+      http: buildHttpClient(),
       blob: buildBlobClient(),
-      concurrency: 3,
+      concurrency: 5,
     });
 
     return NextResponse.json(result);
