@@ -60,6 +60,18 @@ describe("parseStoreList", () => {
   it("returns an empty array when no stores are present", () => {
     expect(parseStoreList("no stores here")).toEqual([]);
   });
+
+  it("does not match the page-header logo link, even though it mentions コモディイイダ elsewhere on the page", () => {
+    const fixtureWithLogoLink = `
+[![トクバイロゴ](https://assets.tokubai.co.jp/assets/themes/bargain_shops/pc_tokubai_logo_header.png)](https://tokubai.co.jp/prefectures/1)
+
+- [コモディイイダ](https://tokubai.co.jp/%E3%82%B3%E3%83%A2%E3%83%87%E3%82%A3%E3%82%A4%E3%82%A4%E3%83%80)
+
+82
+店舗
+`;
+    expect(parseStoreList(fixtureWithLogoLink)).toEqual([]);
+  });
 });
 
 describe("parseStoreDetail", () => {

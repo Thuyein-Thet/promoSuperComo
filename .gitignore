@@ -7,3 +7,4 @@ node_modules/
 .firecrawl/
 .worktrees/
 *.tsbuildinfo
+public/local-blob/

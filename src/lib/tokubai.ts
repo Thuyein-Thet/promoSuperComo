@@ -17,19 +17,16 @@ export interface FlyerImage {
   originalUrl: string;
 }
 
-const STORE_LINK_RE = /\[([\s\S]*?コモディイイダ[\s\S]*?)\]\((https:\/\/tokubai\.co\.jp\/[^)]*\/(\d+))\)/g;
+const STORE_LINK_RE = /\[(?:[\s\S]*?\n)?(コモディイイダ[^\n\]]*?店)\]\((https:\/\/tokubai\.co\.jp\/[^)]*\/(\d+))\)/g;
 
 export function parseStoreList(markdown: string): StoreListing[] {
   const results: StoreListing[] = [];
   const seen = new Set<string>();
   for (const match of markdown.matchAll(STORE_LINK_RE)) {
-    const [, fullName, detailUrl, tokubaiStoreId] = match;
+    const [, name, detailUrl, tokubaiStoreId] = match;
     if (seen.has(tokubaiStoreId)) continue;
     seen.add(tokubaiStoreId);
-    // Extract just the store name - it's after the last newline/backslash sequence
-    const lines = fullName.split(/\n/);
-    const name = lines[lines.length - 1].trim();
-    results.push({ tokubaiStoreId, name, detailUrl });
+    results.push({ tokubaiStoreId, name: name.trim(), detailUrl });
   }
   return results;
 }

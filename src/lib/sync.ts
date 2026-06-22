@@ -17,6 +17,27 @@ export interface SyncResult {
 
 const CHAIN_LEAFLET_URL = "https://tokubai.co.jp/%E3%82%B3%E3%83%A2%E3%83%87%E3%82%A3%E3%82%A4%E3%82%A4%E3%83%80/leaflet";
 
+async function discoverAllStores(firecrawl: FirecrawlClient): Promise<ReturnType<typeof parseStoreList>> {
+  const allStores: ReturnType<typeof parseStoreList> = [];
+  const seen = new Set<string>();
+
+  for (let page = 1; ; page++) {
+    const pageUrl = page === 1 ? CHAIN_LEAFLET_URL : `${CHAIN_LEAFLET_URL}?page=${page}`;
+    const chainPage = await firecrawl.scrape(pageUrl);
+    const pageStores = parseStoreList(chainPage.markdown);
+
+    const newStores = pageStores.filter((store) => !seen.has(store.tokubaiStoreId));
+    if (newStores.length === 0) break;
+
+    for (const store of newStores) {
+      seen.add(store.tokubaiStoreId);
+      allStores.push(store);
+    }
+  }
+
+  return allStores;
+}
+
 async function processStore(
   tokubaiStoreId: string,
   detailUrl: string,
@@ -77,8 +98,7 @@ export async function syncFlyers(deps: {
   blob: BlobClient;
   concurrency?: number;
 }): Promise<SyncResult> {
-  const chainPage = await deps.firecrawl.scrape(CHAIN_LEAFLET_URL);
-  const stores = parseStoreList(chainPage.markdown);
+  const stores = await discoverAllStores(deps.firecrawl);
 
   const result: SyncResult = { storesProcessed: 0, storesFailed: [] };
 

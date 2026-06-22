@@ -15,7 +15,7 @@
 - Chain scope: Comodi Iida only (~82 stores), source is `tokubai.co.jp`.
 - Retention: current flyers only — superseded flyers are deleted (DB row + Blob object), not archived.
 - Store list is re-discovered from the Tokubai chain page on every cron run (not hardcoded).
-- Cron job processes stores in concurrent batches (batch size 8) to stay within Vercel's function timeout.
+- Cron job processes stores in concurrent batches (batch size 3 — lowered from an initial 8 after real-data testing showed 82 stores × ~3 requests/store at concurrency 8 reliably exceeds Firecrawl's 100 req/min rate limit) to stay within Vercel's function timeout and the Firecrawl API's rate limit.
 - Cron job is best-effort: a single store's scrape failure is logged and skipped; it does not abort the run, and that store's existing DB rows are left untouched until a future run succeeds.
 - Flyer images are re-hosted on Vercel Blob — the frontend never hot-links Tokubai's CDN.
 - Map: Leaflet + OpenStreetMap tiles, no API key. Markers cluster; popup on desktop/tablet, bottom panel on mobile.
@@ -336,7 +336,7 @@ export interface FlyerImage {
   originalUrl: string;
 }
 
-const STORE_LINK_RE = /\[([^\]]*コモディイイダ[^\]]*)\]\((https:\/\/tokubai\.co\.jp\/[^)]*\/(\d+))\)/g;
+const STORE_LINK_RE = /\[(?:[\s\S]*?\n)?(コモディイイダ[^\n\]]*?店)\]\((https:\/\/tokubai\.co\.jp\/[^)]*\/(\d+))\)/g;
 
 export function parseStoreList(markdown: string): StoreListing[] {
   const results: StoreListing[] = [];
@@ -881,6 +881,27 @@ export interface SyncResult {
 
 const CHAIN_LEAFLET_URL = "https://tokubai.co.jp/%E3%82%B3%E3%83%A2%E3%83%87%E3%82%A3%E3%82%A4%E3%82%A4%E3%83%80/leaflet";
 
+async function discoverAllStores(firecrawl: FirecrawlClient): Promise<ReturnType<typeof parseStoreList>> {
+  const allStores: ReturnType<typeof parseStoreList> = [];
+  const seen = new Set<string>();
+
+  for (let page = 1; ; page++) {
+    const pageUrl = page === 1 ? CHAIN_LEAFLET_URL : `${CHAIN_LEAFLET_URL}?page=${page}`;
+    const chainPage = await firecrawl.scrape(pageUrl);
+    const pageStores = parseStoreList(chainPage.markdown);
+
+    const newStores = pageStores.filter((store) => !seen.has(store.tokubaiStoreId));
+    if (newStores.length === 0) break;
+
+    for (const store of newStores) {
+      seen.add(store.tokubaiStoreId);
+      allStores.push(store);
+    }
+  }
+
+  return allStores;
+}
+
 async function processStore(
   tokubaiStoreId: string,
   detailUrl: string,
@@ -941,12 +962,11 @@ export async function syncFlyers(deps: {
   blob: BlobClient;
   concurrency?: number;
 }): Promise<SyncResult> {
-  const chainPage = await deps.firecrawl.scrape(CHAIN_LEAFLET_URL);
-  const stores = parseStoreList(chainPage.markdown);
+  const stores = await discoverAllStores(deps.firecrawl);
 
   const result: SyncResult = { storesProcessed: 0, storesFailed: [] };
 
-  await runBatched(stores, deps.concurrency ?? 8, async (store) => {
+  await runBatched(stores, deps.concurrency ?? 3, async (store) => {
     try {
       await processStore(store.tokubaiStoreId, store.detailUrl, deps);
       result.storesProcessed++;
@@ -1050,7 +1070,7 @@ export async function GET(request: NextRequest) {
     const result = await syncFlyers({
       firecrawl: buildFirecrawlClient(),
       blob: buildBlobClient(),
-      concurrency: 8,
+      concurrency: 3,
     });
 
     return NextResponse.json(result);
@@ -1733,7 +1753,7 @@ curl -s -H "Authorization: Bearer local-dev-secret" http://localhost:3000/api/cr
 
 Expected: JSON response like `{"storesProcessed":82,"storesFailed":[]}` (some failures are acceptable per the best-effort design — check that `storesProcessed` is close to 82).
 
-This call takes a while (82 stores, real network requests to Tokubai) — expect it to run for a few minutes given `concurrency: 8`.
+This call takes a while (82 stores, real network requests to Tokubai, paginated discovery across ~5 chain-listing pages) — expect it to run for several minutes given `concurrency: 3` (deliberately kept low to stay under Firecrawl's rate limit).
 
 - [ ] **Step 5: Confirm data landed in Postgres**
 
@@ -1889,4 +1909,4 @@ git commit -m "Document local development and deployment setup"
 - **Amendment (post Task-5 review):** `BlobClient.upload` (Task 4) gained a `tokubaiStoreId` first parameter, and the real adapter in Task 5's cron route keys Blob storage as `flyers/${tokubaiStoreId}/${tokubaiImageId}.jpg` instead of `flyers/${tokubaiImageId}.jpg`. `tokubaiImageId` alone is a Tokubai-CDN-wide image ID, not guaranteed unique per store — without store-scoping, two different stores could collide on the same image ID and silently overwrite each other's flyer Blob. Also added a top-level try/catch in the cron route's `GET` handler so a failure in `ensureSchema()` or the initial chain-page scrape (before `syncFlyers`'s per-store error handling applies) returns a structured `{ error }` 500 response instead of an opaque crash. All affected code blocks in Tasks 4, 5, and 9 were updated for consistency.
 - **Amendment (post Task-8 implementation):** three real bugs found and fixed in `FlyerMap.tsx`/`page.tsx`/the test file, all confirmed by independent reproduction (reverting each fix and observing the original failure), not just trusted: (1) `geocodedStores` needed `useMemo` to avoid an infinite render loop caused by `StoreSearch`'s `useEffect` depending on an unstable array reference; (2) the test file needed its own `vi.mock("react-leaflet-cluster", ...)` since that package's `MarkerClusterGroup` uses real `@react-leaflet/core` context hooks independent of the `react-leaflet` mock; (3) `page.tsx` needed to become a client component using `next/dynamic({ ssr: false })` instead of a static import, since Leaflet touches `window` at module load time and crashes Next.js's server-side prerendering otherwise. All three code blocks above reflect the corrected versions.
 - **Amendment (post Task-9 real-data verification):** two further real bugs surfaced only by testing against live data in a real browser — invisible to every mocked unit test, `tsc`, and `next build`, since those never exercise actual Leaflet DOM/rendering behavior. (1) `<Popup>` was conditionally rendered only when `activeStoreId === store.id`, which changed a clicked marker's children and caused Leaflet to remount the marker DOM node, interrupting its own click-to-open-popup handling for the first click — a second click on the same marker worked since no further remount occurred. Fixed by rendering `<Popup>` unconditionally for non-mobile markers; Leaflet's native open/close handling works correctly once the marker's children are stable across renders. (2) Leaflet's default marker icon assets (`marker-icon.png` etc.) need to be explicitly imported and wired via `L.Icon.Default.mergeOptions(...)`, since this bundler doesn't auto-resolve their relative paths — but the first attempt at this fix used `markerIcon.src` assuming Next.js's bundler returns `StaticImageData` objects for all `.png` imports; in this project's actual Next.js 16.2.9 + Turbopack setup, `.png` imports from `node_modules` (as opposed to app source) resolve to plain string URLs instead, so `.src` was `undefined` and crashed Leaflet with `Error: iconUrl not set in Icon options`, rendering zero markers — confirmed via a live browser probe in both `next dev` and `next build && next start`. The corrected fix uses the imported identifiers directly (`iconUrl: markerIcon`, not `markerIcon.src`). Both fixes were independently re-verified via real headless-browser automation against a fresh production build with seeded real data: markers render as valid loaded images at Leaflet's correct native dimensions (25×41px), and a single click opens the popup, with zero console/page errors.
-- **Note (Task-9 real-data verification):** the brief's example cron response (`{"storesProcessed":82,...}`) was an estimate, not a number pinned to a prior real scrape. The real, current Comodi Iida store count on Tokubai is **20** (confirmed independently via a separate CLI scrape outside the app, cross-checked against the live cron run's output — all 20 store IDs match, with zero scrape failures). This is live data, not a parsing bug; the plan's "82 stores" references throughout are estimates and do not need correction, since the store list is re-discovered fresh on every cron run regardless of count.
+- **Correction (post Task-9, found by the user):** Task 9's original conclusion that "20 is the real, current store count" was **wrong** — the chain listing page paginates via `?page=N` (20 stores per page, 5 pages, 82 total), which Task 9's verification missed because it only ever scraped page 1. Fixed in two places: (1) `parseStoreList`'s regex (`STORE_LINK_RE` in `src/lib/tokubai.ts`) was tightened to require the link text to end in "店" immediately before the closing `]` — the old, looser regex could span across unrelated markdown (e.g. matching the page header's logo link merely because "コモディイイダ" appeared somewhere earlier in the document) and produced a false-positive `tokubai_store_id = "1"` row; (2) `syncFlyers` (`src/lib/sync.ts`) now calls a new `discoverAllStores` helper that walks `?page=1`, `?page=2`, ... until a page yields zero new store IDs, instead of scraping only the unparameterized URL. Both fixes verified against the real site: pages 1-4 each yield exactly 20 stores, page 5 yields 2, page 6 yields 0 — 82 total, matching the page's own "82 店舗" header exactly. Also lowered cron concurrency from 8 to 3 (see the Global Constraints amendment above) since discovering and processing all 82 stores surfaces real Firecrawl rate-limit errors at higher concurrency that a 20-store run never did.

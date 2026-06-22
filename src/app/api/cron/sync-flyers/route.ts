@@ -44,7 +44,7 @@ export async function GET(request: NextRequest) {
     const result = await syncFlyers({
       firecrawl: buildFirecrawlClient(),
       blob: buildBlobClient(),
-      concurrency: 8,
+      concurrency: 3,
     });
 
     return NextResponse.json(result);

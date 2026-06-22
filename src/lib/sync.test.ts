@@ -26,6 +26,7 @@ describe("syncFlyers", () => {
     const firecrawl = {
       scrape: vi.fn(async (url: string) => {
         if (url === CHAIN_URL) return { markdown: STORE_LIST_MD };
+        if (url === `${CHAIN_URL}?page=2`) return { markdown: "no more stores" };
         if (url === "https://tokubai.co.jp/x/259321") return { markdown: STORE_DETAIL_MD };
         if (url === "https://tokubai.co.jp/x/259321/leaflets/111") return { markdown: LEAFLET_PAGE_MD };
         throw new Error(`unexpected url ${url}`);
@@ -56,6 +57,7 @@ describe("syncFlyers", () => {
     const firecrawl = {
       scrape: vi.fn(async (url: string) => {
         if (url === CHAIN_URL) return { markdown: twoStoreListMd };
+        if (url === `${CHAIN_URL}?page=2`) return { markdown: "no more stores" };
         if (url === "https://tokubai.co.jp/x/259321") throw new Error("network error");
         if (url === "https://tokubai.co.jp/x/7530") return { markdown: STORE_DETAIL_MD.replace(/259321/g, "7530") };
         if (url === "https://tokubai.co.jp/x/7530/leaflets/111") return { markdown: LEAFLET_PAGE_MD };
@@ -78,6 +80,7 @@ describe("syncFlyers", () => {
     const firecrawl = {
       scrape: vi.fn(async (url: string) => {
         if (url === CHAIN_URL) return { markdown: STORE_LIST_MD };
+        if (url === `${CHAIN_URL}?page=2`) return { markdown: "no more stores" };
         if (url === "https://tokubai.co.jp/x/259321") return { markdown: STORE_DETAIL_MD };
         if (url === "https://tokubai.co.jp/x/259321/leaflets/111") return { markdown: LEAFLET_PAGE_MD };
         throw new Error(`unexpected url ${url}`);
@@ -90,6 +93,7 @@ describe("syncFlyers", () => {
     const emptyLeafletMd = `no images today`;
     firecrawl.scrape = vi.fn(async (url: string) => {
       if (url === CHAIN_URL) return { markdown: STORE_LIST_MD };
+      if (url === `${CHAIN_URL}?page=2`) return { markdown: "no more stores" };
       if (url === "https://tokubai.co.jp/x/259321") return { markdown: STORE_DETAIL_MD };
       if (url === "https://tokubai.co.jp/x/259321/leaflets/111") return { markdown: emptyLeafletMd };
       throw new Error(`unexpected url ${url}`);
@@ -100,5 +104,37 @@ describe("syncFlyers", () => {
     expect(blob.delete).toHaveBeenCalledWith("https://blob.example/9416450.jpg");
     const stores = await getAllStoresWithFlyers();
     expect(stores[0].flyers).toEqual([]);
+  });
+
+  it("walks multiple chain pages until a page yields no new stores", async () => {
+    const page1Md = `[コモディイイダ 鹿浜店](https://tokubai.co.jp/x/259321)`;
+    const page2Md = `[コモディイイダ 越谷店](https://tokubai.co.jp/x/7530)`;
+    const page3Md = `no more stores`;
+
+    const firecrawl = {
+      scrape: vi.fn(async (url: string) => {
+        if (url === CHAIN_URL) return { markdown: page1Md };
+        if (url === `${CHAIN_URL}?page=2`) return { markdown: page2Md };
+        if (url === `${CHAIN_URL}?page=3`) return { markdown: page3Md };
+        if (url === "https://tokubai.co.jp/x/259321") return { markdown: STORE_DETAIL_MD };
+        if (url === "https://tokubai.co.jp/x/259321/leaflets/111") return { markdown: LEAFLET_PAGE_MD };
+        if (url === "https://tokubai.co.jp/x/7530") return { markdown: STORE_DETAIL_MD.replace(/259321/g, "7530") };
+        if (url === "https://tokubai.co.jp/x/7530/leaflets/111") return { markdown: LEAFLET_PAGE_MD };
+        throw new Error(`unexpected url ${url}`);
+      }),
+    };
+    const blob = { upload: vi.fn(async (_storeId: string, id: string) => `https://blob.example/${id}.jpg`), delete: vi.fn(async () => {}) };
+
+    const result = await syncFlyers({ firecrawl, blob, concurrency: 2 });
+
+    expect(result.storesProcessed).toBe(2);
+    expect(result.storesFailed).toEqual([]);
+    expect(firecrawl.scrape).toHaveBeenCalledWith(CHAIN_URL);
+    expect(firecrawl.scrape).toHaveBeenCalledWith(`${CHAIN_URL}?page=2`);
+    expect(firecrawl.scrape).toHaveBeenCalledWith(`${CHAIN_URL}?page=3`);
+
+    const stores = await getAllStoresWithFlyers();
+    expect(stores).toHaveLength(2);
+    expect(new Set(stores.map((s) => s.tokubaiStoreId))).toEqual(new Set(["259321", "7530"]));
   });
 });
