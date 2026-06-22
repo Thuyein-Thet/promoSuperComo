@@ -11,14 +11,15 @@ import markerShadow from "leaflet/dist/images/marker-shadow.png";
 import { StoreSearch, type SearchableStore } from "./StoreSearch";
 import { FlyerViewer } from "./FlyerViewer";
 
-// Next.js's bundler resolves static image imports (.png) to StaticImageData
-// objects (with a `.src` URL), not plain strings, so we read `.src` here.
-// Without this, Leaflet's default marker icon paths 404 in the browser.
+// Next.js/Turbopack resolves leaflet's *.png imports (from node_modules) to
+// plain string URLs, not StaticImageData objects — confirmed via a runtime
+// probe in both `next dev` and `next build && next start`. Using `.src`
+// here would be undefined and crash Leaflet at marker-mount time.
 delete (L.Icon.Default.prototype as any)._getIconUrl;
 L.Icon.Default.mergeOptions({
-  iconUrl: markerIcon.src,
-  iconRetinaUrl: markerIcon2x.src,
-  shadowUrl: markerShadow.src,
+  iconUrl: markerIcon,
+  iconRetinaUrl: markerIcon2x,
+  shadowUrl: markerShadow,
 });
 
 interface Store extends SearchableStore {
