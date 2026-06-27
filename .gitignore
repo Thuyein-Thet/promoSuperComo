@@ -8,3 +8,5 @@ node_modules/
 .worktrees/
 *.tsbuildinfo
 public/local-blob/
+.vercel
+.env*

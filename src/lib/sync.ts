@@ -64,15 +64,23 @@ async function processStore(
   const existingImageIds = new Set(await getFlyerImageIdsForStore(store.id));
   const newImages = currentImages.filter((image) => !existingImageIds.has(image.tokubaiImageId));
 
+  let uploadError: unknown;
   for (const image of newImages) {
-    const blobUrl = await deps.blob.upload(tokubaiStoreId, image.tokubaiImageId, image.originalUrl);
-    await upsertFlyer({ storeId: store.id, tokubaiImageId: image.tokubaiImageId, blobUrl });
+    try {
+      const blobUrl = await deps.blob.upload(tokubaiStoreId, image.tokubaiImageId, image.originalUrl);
+      await upsertFlyer({ storeId: store.id, tokubaiImageId: image.tokubaiImageId, blobUrl });
+    } catch (err) {
+      uploadError = err;
+      break;
+    }
   }
 
   const deleted = await deleteFlyersNotIn(store.id, [...currentImageIds]);
   for (const flyer of deleted) {
     await deps.blob.delete(flyer.blobUrl);
   }
+
+  if (uploadError) throw uploadError;
 }
 
 async function runBatched<T>(items: T[], concurrency: number, fn: (item: T) => Promise<void>): Promise<void> {

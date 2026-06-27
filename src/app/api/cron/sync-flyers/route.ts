@@ -28,6 +28,7 @@ function buildBlobClient(): BlobClient {
       const blob = await put(`flyers/${tokubaiStoreId}/${tokubaiImageId}.jpg`, Buffer.from(bytes), {
         access: "public",
         addRandomSuffix: false,
+        allowOverwrite: true,
       });
       return blob.url;
     },

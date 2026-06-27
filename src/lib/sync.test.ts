@@ -129,6 +129,39 @@ describe("syncFlyers", () => {
     expect(stores[0].flyers).toEqual([]);
   });
 
+  it("still prunes stale flyers for a store whose new-image upload fails", async () => {
+    const http = {
+      fetchText: vi.fn(async (url: string) => {
+        if (url === CHAIN_URL) return storeListHtml([{ id: "259321", name: "コモディイイダ 鹿浜店" }]);
+        if (url === `${CHAIN_URL}?page=2`) return EMPTY_LIST_HTML;
+        if (url === "https://tokubai.co.jp/x/259321") return storeDetailHtml("259321", "コモディイイダ 鹿浜店", 35.7842765, 139.7646489, "111");
+        if (url === "https://tokubai.co.jp/x/259321/leaflets/111") return leafletHtml([{ id: "9416450" }]);
+        throw new Error(`unexpected url ${url}`);
+      }),
+    };
+    const blob = { upload: vi.fn(async (_storeId: string, id: string) => `https://blob.example/${id}.jpg`), delete: vi.fn(async () => {}) };
+
+    await syncFlyers({ http, blob, concurrency: 2 });
+
+    http.fetchText = vi.fn(async (url: string) => {
+      if (url === CHAIN_URL) return storeListHtml([{ id: "259321", name: "コモディイイダ 鹿浜店" }]);
+      if (url === `${CHAIN_URL}?page=2`) return EMPTY_LIST_HTML;
+      if (url === "https://tokubai.co.jp/x/259321") return storeDetailHtml("259321", "コモディイイダ 鹿浜店", 35.7842765, 139.7646489, "111");
+      if (url === "https://tokubai.co.jp/x/259321/leaflets/111") return leafletHtml([{ id: "9999999" }]);
+      throw new Error(`unexpected url ${url}`);
+    });
+    blob.upload = vi.fn(async () => {
+      throw new Error("No blob credentials found");
+    });
+
+    const result = await syncFlyers({ http, blob, concurrency: 2 });
+
+    expect(result.storesFailed).toEqual([{ tokubaiStoreId: "259321", error: "No blob credentials found" }]);
+
+    const stores = await getAllStoresWithFlyers();
+    expect(stores[0].flyers).toEqual([]);
+  });
+
   it("walks multiple chain pages until a page yields no new stores", async () => {
     const http = {
       fetchText: vi.fn(async (url: string) => {

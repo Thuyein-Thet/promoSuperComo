@@ -15,13 +15,18 @@ A map of current promotion flyers for all Comodi Iida supermarket stores, scrape
 ## Local development
 
 ```bash
-# Postgres (only needed once; reuse the same container across sessions)
-docker run -d --name superpromo-dev-pg -e POSTGRES_PASSWORD=postgres -p 5433:5432 postgres:16
+# Postgres (only needed once; any local Postgres 16 works, e.g. `brew install postgresql@16`)
+createdb comodi_iida_dev
 
 cp .env.example .env.local   # fill in POSTGRES_URL, BLOB_READ_WRITE_TOKEN, CRON_SECRET
 npm install
 npm run dev
 ```
+
+Use a database dedicated to local dev, separate from the one `vitest` runs
+against — the test suite truncates its tables between runs, so pointing both
+at the same database will wipe your locally synced data the next time you
+run `npm test`.
 
 Trigger a sync manually:
 
@@ -37,7 +42,15 @@ npm test
 
 ## Deployment
 
-Deployed on Vercel. Postgres is provisioned via the Vercel Postgres (Neon) integration; image storage via Vercel Blob. The sync job runs on a schedule configured in `vercel.json`, hitting `/api/cron/sync-flyers`.
+The project is linked to Vercel (`comodi-iida-flyer-map`, connected to this
+GitHub repo) with a Vercel Blob store provisioned and connected, but it has
+not yet been deployed to production. Remaining before the sync runs on a
+real schedule: provision a hosted Postgres reachable from Vercel (local
+Postgres only works for `npm run dev` on your machine), set the production
+environment variables below in the Vercel project settings, and run
+`vercel --prod`. The sync schedule itself is already configured in
+`vercel.json`, hitting `/api/cron/sync-flyers` daily — it just needs a live
+deployment to actually fire.
 
 Required environment variables in production:
 
