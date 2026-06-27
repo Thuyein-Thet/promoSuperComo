@@ -17,16 +17,20 @@ A map of current promotion flyers for all Comodi Iida supermarket stores, scrape
 ```bash
 # Postgres (only needed once; any local Postgres 16 works, e.g. `brew install postgresql@16`)
 createdb comodi_iida_dev
+createdb comodi_iida_test
 
-cp .env.example .env.local   # fill in POSTGRES_URL, BLOB_READ_WRITE_TOKEN, CRON_SECRET
+cp .env.example .env.local        # fill in POSTGRES_URL (comodi_iida_dev), BLOB_READ_WRITE_TOKEN, CRON_SECRET
+cp .env.test.example .env.test    # POSTGRES_URL pointed at comodi_iida_test
 npm install
 npm run dev
 ```
 
-Use a database dedicated to local dev, separate from the one `vitest` runs
-against — the test suite truncates its tables between runs, so pointing both
-at the same database will wipe your locally synced data the next time you
-run `npm test`.
+The test suite truncates its database between runs (see `beforeEach`/
+`afterEach` in `src/lib/*.test.ts`), so it always connects to whatever
+`POSTGRES_URL` is in `.env.test` — loaded by `vitest.setup.ts` with
+`override: true`, regardless of what's exported in your shell or set in
+`.env.local`. Keep `.env.test` pointed at a database you don't mind being
+wiped on every `npm test` run, separate from the one the dev server uses.
 
 Trigger a sync manually:
 

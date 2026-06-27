@@ -1,8 +1,5 @@
 node_modules/
 .next/
-.env
-.env.*
-!.env.example
 .superpowers/
 .firecrawl/
 .worktrees/
@@ -10,3 +7,5 @@ node_modules/
 public/local-blob/
 .vercel
 .env*
+!.env.example
+!.env.test.example
