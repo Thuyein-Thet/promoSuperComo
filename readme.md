@@ -46,15 +46,10 @@ npm test
 
 ## Deployment
 
-The project is linked to Vercel (`comodi-iida-flyer-map`, connected to this
-GitHub repo) with a Vercel Blob store provisioned and connected, but it has
-not yet been deployed to production. Remaining before the sync runs on a
-real schedule: provision a hosted Postgres reachable from Vercel (local
-Postgres only works for `npm run dev` on your machine), set the production
-environment variables below in the Vercel project settings, and run
-`vercel --prod`. The sync schedule itself is already configured in
-`vercel.json`, hitting `/api/cron/sync-flyers` daily — it just needs a live
-deployment to actually fire.
+Deployed on Vercel at https://comodi-iida-flyer-map.vercel.app, linked to
+this GitHub repo. Postgres (via the Neon integration) and Blob are both
+provisioned and connected to the project. The daily sync runs via Vercel
+Cron (`vercel.json`), hitting `/api/cron/sync-flyers`.
 
 Required environment variables in production:
 

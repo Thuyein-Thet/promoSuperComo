@@ -1819,7 +1819,7 @@ No commit for this task — it's verification only, and Step 7 already reverted 
 
 **Interfaces:** none — this task wires the already-built app to real Vercel infrastructure.
 
-- [ ] **Step 1: Link the project to Vercel**
+- [x] **Step 1: Link the project to Vercel**
 
 ```bash
 npx vercel login
@@ -1828,7 +1828,7 @@ npx vercel link
 
 Follow the prompts to create or select a Vercel project (this is the point to confirm/set the project name, e.g. `promosupercomo`, if desired — see the separate GitHub remote-naming preference already noted).
 
-- [ ] **Step 2: Provision Vercel Postgres and Blob**
+- [x] **Step 2: Provision Vercel Postgres and Blob**
 
 Vercel Postgres is provisioned as a marketplace integration (no longer a
 standalone `vercel postgres` command). Run this and follow the interactive
@@ -1855,7 +1855,7 @@ Confirm `.env.vercel` contains `POSTGRES_URL` and `BLOB_READ_WRITE_TOKEN`
 — these were added to the Vercel project automatically by the two
 commands above.
 
-- [ ] **Step 3: Set the remaining environment variables**
+- [x] **Step 3: Set the remaining environment variables**
 
 (Amended: `FIRECRAWL_API_KEY` is no longer needed — the scraper uses native `fetch()`, not the Firecrawl SDK. Only `CRON_SECRET` remains.)
 
@@ -1869,7 +1869,7 @@ Paste a generated random secret when prompted:
 openssl rand -hex 32
 ```
 
-- [ ] **Step 4: Deploy**
+- [x] **Step 4: Deploy**
 
 ```bash
 npx vercel --prod
@@ -1877,7 +1877,7 @@ npx vercel --prod
 
 Expected: deployment succeeds and prints a production URL.
 
-- [ ] **Step 5: Verify the deployed cron route manually once**
+- [x] **Step 5: Verify the deployed cron route manually once**
 
 ```bash
 npx vercel env pull .env.production.local --environment=production
@@ -1889,7 +1889,7 @@ Expected: JSON response with `storesProcessed` close to 82.
 
 (Vercel Cron itself will begin invoking this route automatically once daily per `vercel.json`'s schedule — no further action needed for that to start running.)
 
-- [ ] **Step 6: Update `readme.md`**
+- [x] **Step 6: Update `readme.md`**
 
 Replace its contents with:
 
@@ -1917,7 +1917,7 @@ Postgres/Blob integrations. The daily sync runs via Vercel Cron
 (`vercel.json`), hitting `/api/cron/sync-flyers`.
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add readme.md
@@ -1945,3 +1945,4 @@ git commit -m "Document local development and deployment setup"
   - **Efficiency discovery during the rewrite:** a single leaflet detail page's `data-view-state` JSON lists *every* currently-active leaflet for that store (confirmed by inspecting the real JSON — both leaflet IDs for a 2-flyer store appear in one page's `leaflets` array), so `processStore` only needs to fetch the *first* leaflet URL per store, not one fetch per leaflet URL as the Firecrawl-based version did. This reduces total requests per store from ~3 to ~2.
   - `src/app/api/cron/sync-flyers/route.ts`'s `buildFirecrawlClient()` was replaced with `buildHttpClient()`, a plain `fetch()` wrapper sending a normal browser `User-Agent` header; `buildBlobClient()` is unchanged (still real `@vercel/blob`).
   - Verified against the real site: **82 of 82 stores processed, 164 flyers, zero failures, completed in 13.6 seconds** — faster than the old rate-limited Firecrawl version (which took several minutes and still missed 1 store) and at zero ongoing cost.
+- **Amendment (post Task-10, production deploy gap):** the app was deployed to Vercel with only the Blob integration provisioned — `POSTGRES_URL` and `CRON_SECRET` were never set in production, so `/api/cron/sync-flyers` 401'd on every invocation and the live site showed 0 stores/0 flyers despite a "successful" deployment. Fixed by installing the Neon marketplace integration (`vercel integration add neon`, after accepting Neon's marketplace terms in the dashboard) to provision and auto-connect Postgres, generating and adding `CRON_SECRET` via `vercel env add`, and redeploying so the running app picked up both new env vars. Verified against production: manually triggering the cron route returned `{"storesProcessed":82,"storesFailed":[]}`, and `/api/stores` confirmed 82 stores with 164 flyers live at https://comodi-iida-flyer-map.vercel.app.
