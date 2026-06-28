@@ -58,3 +58,7 @@ Required environment variables in production:
 | `POSTGRES_URL` | Postgres connection string (from the Vercel Postgres/Neon integration) |
 | `BLOB_READ_WRITE_TOKEN` | Vercel Blob write access (from the Vercel Blob integration) |
 | `CRON_SECRET` | Bearer token required to trigger `/api/cron/sync-flyers` |
+
+## License
+
+[MIT](LICENSE)
