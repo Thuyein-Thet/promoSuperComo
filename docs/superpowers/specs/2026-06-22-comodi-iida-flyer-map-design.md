@@ -19,8 +19,8 @@ location or by name search.
 ```
 Vercel Cron (daily)
   -> /api/cron/sync-flyers  (serverless function)
-       -> Firecrawl SDK: scrape chain store-list page -> store IDs/URLs
-       -> Firecrawl SDK: scrape each store's leaflet page(s) (batched, concurrent)
+       -> fetch() + cheerio: scrape chain store-list page (paginated) -> store IDs/URLs
+       -> fetch() + cheerio: scrape each store's leaflet page (batched, concurrent)
        -> Vercel Blob: upload new/changed flyer images
        -> Vercel Postgres: upsert stores, upsert/delete flyers
 
@@ -109,13 +109,25 @@ Triggered once daily by Vercel Cron.
 
 ## Integration Details
 
-- **Firecrawl**: called via the Firecrawl SDK/API directly from the
-  serverless function (not the CLI). Requires `FIRECRAWL_API_KEY` as a
-  Vercel environment variable.
+- **Scraping**: Tokubai's pages are plain server-rendered HTML, so no
+  headless-browser/scraping API is needed. The cron route fetches pages
+  directly with `fetch()` (a normal browser `User-Agent` header) and
+  parses them with `cheerio`, selecting via CSS classes
+  (`div[class^='shop_leaflet_index_card ']` for store cards, `a.shop_name`
+  / `.address a[href*='maps']` for store detail, and the embedded
+  `data-view-state` JSON for flyer images). Zero per-request cost; no API
+  key. A single leaflet detail page's `data-view-state` lists every
+  currently-active leaflet for that store, so only one leaflet page fetch
+  per store is needed.
 - **Vercel Blob**: flyer images are downloaded from Tokubai and
-  re-uploaded to Blob; the DB stores only the Blob URL. The frontend never
+  re-uploaded to Blob, keyed as `flyers/${tokubaiStoreId}/${tokubaiImageId}.jpg`
+  (store-scoped, since `tokubaiImageId` alone is not guaranteed unique
+  across stores); the DB stores only the Blob URL. The frontend never
   hot-links Tokubai's CDN.
-- **Vercel Postgres**: standard Vercel Postgres (Neon-backed) integration.
+- **Vercel Postgres**: provisioned via the Neon marketplace integration
+  (`vercel integration add neon`), wire-protocol compatible with the `pg`
+  driver used by the app, both locally and in production via the same
+  `POSTGRES_URL`.
 
 ## Out of Scope (explicitly not building)
 
@@ -128,6 +140,6 @@ Triggered once daily by Vercel Cron.
 
 ## Setup Notes
 
-- Project currently has no git repository — needs `git init` and a
-  `.gitignore` (covering `.superpowers/`, `.firecrawl/`, `.env*`,
-  `node_modules`, `.next`) before the first commit.
+- Deployed and running in production on Vercel at
+  https://comodi-iida-flyer-map.vercel.app. See `readme.md` for local
+  development and deployment details.
