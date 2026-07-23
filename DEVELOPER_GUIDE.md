@@ -90,6 +90,12 @@ GitHub repo. Postgres (via the Neon integration) and Blob are provisioned
 and connected to the project; required env vars are the same three listed
 above, set in the Vercel project settings rather than `.env.local`.
 
+The cron schedule in `vercel.json` is currently removed — the daily sync was
+exceeding Vercel Blob's monthly Advanced Operations quota (put/del calls).
+The route still works when triggered manually (see above); re-add a
+`crons` entry once the sync makes fewer Blob calls per run (e.g. skip
+uploads for unchanged images) or the plan's quota is raised.
+
 ## Useful references
 
 - Design spec: `docs/superpowers/specs/2026-06-22-comodi-iida-flyer-map-design.md`
